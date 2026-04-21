@@ -35,6 +35,7 @@ static const TCHAR SAVE_DEFAULT_NAME[] = TEXT("checksums");
 VOID WINAPI HashCalcWalkDirectory( PHASHCALCCONTEXT phcctx, PTSTR pszPath, UINT cchPath );
 __forceinline BOOL WINAPI IsSpecialDirectoryName( PCTSTR pszPath );
 __forceinline BOOL WINAPI IsDoubleSlashPath( PCTSTR pszPath );
+__forceinline UINT WINAPI HashCalcGetSharedStem( PHASHCALCCONTEXT phcctx, PCTSTR *ppszStem );
 
 // Save helpers
 __forceinline VOID WINAPI HashCalcSetSavePrefix( PHASHCALCCONTEXT phcctx, PTSTR pszSave );
@@ -240,6 +241,48 @@ BOOL WINAPI IsDoubleSlashPath( PCTSTR pszPath )
 	#endif
 }
 
+UINT WINAPI HashCalcGetSharedStem( PHASHCALCCONTEXT phcctx, PCTSTR *ppszStem )
+{
+	PTSTR pszFirstPath, pszPath;
+	PCTSTR pszFirstStem, pszFirstExt;
+	UINT cchFirstStem;
+
+	SLReset(phcctx->hListRaw);
+	pszFirstPath = SLGetDataAndStep(phcctx->hListRaw);
+
+	if (!pszFirstPath)
+		return(0);
+
+	pszFirstStem = StrRChr(pszFirstPath, NULL, TEXT('\\'));
+	pszFirstStem = pszFirstStem ? pszFirstStem + 1 : pszFirstPath;
+	pszFirstExt = StrRChr(pszFirstStem, NULL, TEXT('.'));
+	cchFirstStem = (UINT)((pszFirstExt && pszFirstExt > pszFirstStem) ?
+		pszFirstExt - pszFirstStem :
+		SSLen(pszFirstStem));
+
+	if (cchFirstStem == 0)
+		return(0);
+
+	while (pszPath = SLGetDataAndStep(phcctx->hListRaw))
+	{
+		PCTSTR pszStem = StrRChr(pszPath, NULL, TEXT('\\'));
+		PCTSTR pszExt;
+		UINT cchStem;
+
+		pszStem = pszStem ? pszStem + 1 : pszPath;
+		pszExt = StrRChr(pszStem, NULL, TEXT('.'));
+		cchStem = (UINT)((pszExt && pszExt > pszStem) ?
+			pszExt - pszStem :
+			SSLen(pszStem));
+
+		if (cchStem != cchFirstStem || StrCmpNI(pszStem, pszFirstStem, cchFirstStem) != 0)
+			return(0);
+	}
+
+	*ppszStem = pszFirstStem;
+	return(cchFirstStem);
+}
+
 
 
 /*============================================================================*\
@@ -281,12 +324,28 @@ VOID WINAPI HashCalcInitSave( PHASHCALCCONTEXT phcctx )
 
 			if (SLCheck(phcctx->hListRaw))
 			{
+				PCTSTR pszSharedStem;
+				UINT cchSharedStem = HashCalcGetSharedStem(phcctx, &pszSharedStem);
+
 				// Multiple items were selected in Explorer
-				SSChainNCpy2(
-					pszFile,
-					pszOrigPath, phcctx->cchPrefix,
-					SAVE_DEFAULT_NAME, countof(SAVE_DEFAULT_NAME)
-				);
+				if (cchSharedStem)
+				{
+					PTSTR pszFileEnd = SSChainNCpy2(
+						pszFile,
+						pszOrigPath, phcctx->cchPrefix,
+						pszSharedStem, cchSharedStem
+					);
+
+					*pszFileEnd = 0;
+				}
+				else
+				{
+					SSChainNCpy2(
+						pszFile,
+						pszOrigPath, phcctx->cchPrefix,
+						SAVE_DEFAULT_NAME, countof(SAVE_DEFAULT_NAME)
+					);
+				}
 			}
 			else
 			{
