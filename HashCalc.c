@@ -389,7 +389,7 @@ VOID WINAPI HashCalcInitSave( PHASHCALCCONTEXT phcctx )
 		HashCalcSetSavePrefix(phcctx, pszFile);
 
 		// Open the file for output
-		phcctx->hFileOut = CreateFile(
+		phcctx->hFileOut = CreateFileWithLongPathRetry(
 			pszFile,
 			FILE_APPEND_DATA | DELETE,
 			FILE_SHARE_READ,

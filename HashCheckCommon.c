@@ -84,16 +84,19 @@ HANDLE __fastcall CreateThreadCRT( PVOID pThreadProc, PVOID pvParam )
 	));
 }
 
-HANDLE __fastcall OpenFileForReading( PCTSTR pszPath )
+HANDLE __fastcall CreateFileWithLongPathRetry( PCTSTR pszPath, DWORD dwDesiredAccess,
+                                               DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                                               DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes,
+                                               HANDLE hTemplateFile )
 {
 	HANDLE hFile = CreateFile(
 		pszPath,
-		GENERIC_READ,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		NULL,
-		OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-		NULL
+		dwDesiredAccess,
+		dwShareMode,
+		lpSecurityAttributes,
+		dwCreationDisposition,
+		dwFlagsAndAttributes,
+		hTemplateFile
 	);
 
 	if (hFile == INVALID_HANDLE_VALUE)
@@ -105,12 +108,12 @@ HANDLE __fastcall OpenFileForReading( PCTSTR pszPath )
 		{
 			hFile = CreateFile(
 				pszLongPath,
-				GENERIC_READ,
-				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-				NULL,
-				OPEN_EXISTING,
-				FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-				NULL
+				dwDesiredAccess,
+				dwShareMode,
+				lpSecurityAttributes,
+				dwCreationDisposition,
+				dwFlagsAndAttributes,
+				hTemplateFile
 			);
 
 			free(pszLongPath);
@@ -122,6 +125,19 @@ HANDLE __fastcall OpenFileForReading( PCTSTR pszPath )
 	}
 
 	return(hFile);
+}
+
+HANDLE __fastcall OpenFileForReading( PCTSTR pszPath )
+{
+	return(CreateFileWithLongPathRetry(
+		pszPath,
+		GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+		NULL
+	));
 }
 
 DWORD WINAPI GetReadBufferSizeForPath( PCTSTR pszPath )
