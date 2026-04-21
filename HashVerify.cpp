@@ -1422,7 +1422,16 @@ INT __cdecl HashVerifySortCompare( PHASHVERIFYCONTEXT phvctx, PPCHVITEM ppItemA,
 			return(pItemA->filesize.ui64 < pItemB->filesize.ui64 ? -1 : (pItemA->filesize.ui64 == pItemB->filesize.ui64 ? 0 : 1));
 
 		case HV_COL_STATUS:
-			return((INT8)pItemA->uStatusID - (INT8)pItemB->uStatusID);
+		{
+			static const INT8 s_iStatusSortOrder[] = {
+				3, // HV_STATUS_NULL
+				2, // HV_STATUS_MATCH
+				0, // HV_STATUS_MISMATCH
+				1  // HV_STATUS_UNREADABLE
+			};
+
+			return(s_iStatusSortOrder[pItemA->uStatusID] - s_iStatusSortOrder[pItemB->uStatusID]);
+		}
 
 		case HV_COL_EXPECTED:
 			return(StrCmpI(pItemA->pszExpected, pItemB->pszExpected));
