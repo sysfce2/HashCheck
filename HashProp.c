@@ -24,6 +24,17 @@
 #define  HASHPROPITEM     HASHCALCITEM
 #define PHASHPROPITEM    PHASHCALCITEM
 
+#ifdef UNICODE
+#define StrCmpLogical StrCmpLogicalW
+#else
+#define StrCmpLogical StrCmpIA
+#endif
+
+typedef struct {
+	PHASHPROPITEM pItem;
+	UINT iOriginal;
+} HASHPROPSORTITEM, *PHASHPROPSORTITEM;
+
 
 /*============================================================================*\
 	Function declarations
@@ -48,6 +59,7 @@ VOID WINAPI HashPropFinalStatus( PHASHPROPCONTEXT phpctx );
 VOID WINAPI HashPropFindText( PHASHPROPCONTEXT phpctx, BOOL bIncremental );
 VOID WINAPI HashPropSaveResults( PHASHPROPCONTEXT phpctx );
 VOID WINAPI HashPropDoSaveResults( PHASHPROPCONTEXT phpctx );
+INT __cdecl HashPropSortCompare( void *pvContext, const void *pvItemA, const void *pvItemB );
 VOID WINAPI HashPropSaveResultsCleanup( PHASHPROPCONTEXT phpctx );
 VOID WINAPI HashPropOptions( PHASHPROPCONTEXT phpctx );
 
@@ -854,15 +866,62 @@ VOID WINAPI HashPropDoSaveResults(PHASHPROPCONTEXT phpctx)
         HashCalcSetSaveFormat(phpctx);
 
 		PHASHPROPITEM pItem;
+		PHASHPROPSORTITEM pSortItems = NULL;
+		UINT cItems = 0;
+
+		if (phpctx->cTotal)
+			pSortItems = (PHASHPROPSORTITEM)malloc(phpctx->cTotal * sizeof(*pSortItems));
 
 		SLReset(phpctx->hList);
-
 		while (pItem = SLGetDataAndStep(phpctx->hList))
-			HashCalcWriteResult(phpctx, pItem);
+		{
+			if (pSortItems)
+			{
+				pSortItems[cItems].pItem = pItem;
+				pSortItems[cItems].iOriginal = cItems;
+			}
+
+			++cItems;
+		}
+
+		if (pSortItems)
+		{
+			UINT i;
+
+			qsort_s(pSortItems, cItems, sizeof(*pSortItems), HashPropSortCompare, phpctx);
+
+			for (i = 0; i < cItems; ++i)
+				HashCalcWriteResult(phpctx, pSortItems[i].pItem);
+
+			free(pSortItems);
+		}
+		else
+		{
+			SLReset(phpctx->hList);
+
+			while (pItem = SLGetDataAndStep(phpctx->hList))
+				HashCalcWriteResult(phpctx, pItem);
+		}
 	}
 
 	CloseHandle(phpctx->hFileOut);
     phpctx->hFileOut = INVALID_HANDLE_VALUE;
+}
+
+INT __cdecl HashPropSortCompare( void *pvContext, const void *pvItemA, const void *pvItemB )
+{
+	PHASHPROPCONTEXT phpctx = (PHASHPROPCONTEXT)pvContext;
+	const HASHPROPSORTITEM *pItemA = (const HASHPROPSORTITEM *)pvItemA;
+	const HASHPROPSORTITEM *pItemB = (const HASHPROPSORTITEM *)pvItemB;
+	INT iCompare = StrCmpLogical(
+		pItemA->pItem->szPath + phpctx->cchAdjusted,
+		pItemB->pItem->szPath + phpctx->cchAdjusted
+	);
+
+	if (iCompare)
+		return(iCompare);
+
+	return(pItemA->iOriginal < pItemB->iOriginal ? -1 : (pItemA->iOriginal == pItemB->iOriginal ? 0 : 1));
 }
 
 VOID WINAPI HashPropSaveResultsCleanup( PHASHPROPCONTEXT phpctx )
