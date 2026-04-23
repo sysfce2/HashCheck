@@ -118,6 +118,13 @@ Var LastCode
     ${EndIf}
 !macroend
 
+!macro FlagRebootIfFileExists Path
+    IfFileExists "${Path}" 0 +4
+        Delete /REBOOTOK "${Path}"
+        IfFileExists "${Path}" 0 +2
+            SetRebootFlag true
+!macroend
+
 Function init_log
     StrCpy $LogPath "$TEMP\HashCheckSetup.log"
 
@@ -234,11 +241,21 @@ Section
 
         !insertmacro SetStep "Registering 64-bit shell extension"
         ClearErrors
-        ExecWait 'regsvr32 /i /n /s "$0"' $LastCode
+        ExecWait 'regsvr32 /i:"NoRebootPrompt" /n /s "$0"' $LastCode
         !insertmacro LogLine "64-bit regsvr32 exit code: $LastCode"
         !insertmacro AbortIfErrors "Launching 64-bit regsvr32"
         !insertmacro AbortIfExitCode "Registering 64-bit shell extension"
         Delete $0
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.0"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.1"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.2"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.3"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.4"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.5"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.6"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.7"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.8"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES64\HashCheck\HashCheck.dll.9"
 
         ; Install the 64-bit TBB runtime beside the shell extension DLL.
         Delete /REBOOTOK "$SYSDIR\ShellExt\tbb12.dll"
@@ -345,10 +362,20 @@ Section
 
         !insertmacro SetStep "Registering 32-bit shell extension"
         ClearErrors
-        ExecWait 'regsvr32 /i:"NoUninstall" /n /s "$0"' $LastCode
+        ExecWait 'regsvr32 /i:"NoUninstall NoRebootPrompt" /n /s "$0"' $LastCode
         !insertmacro LogLine "32-bit regsvr32 exit code: $LastCode"
         !insertmacro AbortIfErrors "Launching 32-bit regsvr32"
         !insertmacro AbortIfExitCode "Registering 32-bit shell extension"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.0"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.1"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.2"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.3"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.4"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.5"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.6"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.7"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.8"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES32\HashCheck\HashCheck.dll.9"
 
         ; Clean up the old SysWOW64 install location used by earlier releases.
         !insertmacro SetStep "Cleaning up old 32-bit install location"
@@ -362,10 +389,20 @@ Section
 
         !insertmacro SetStep "Registering 32-bit shell extension"
         ClearErrors
-        ExecWait 'regsvr32 /i /n /s "$0"' $LastCode
+        ExecWait 'regsvr32 /i:"NoRebootPrompt" /n /s "$0"' $LastCode
         !insertmacro LogLine "32-bit regsvr32 exit code: $LastCode"
         !insertmacro AbortIfErrors "Launching 32-bit regsvr32"
         !insertmacro AbortIfExitCode "Registering 32-bit shell extension"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.0"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.1"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.2"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.3"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.4"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.5"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.6"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.7"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.8"
+        !insertmacro FlagRebootIfFileExists "$PROGRAMFILES\HashCheck\HashCheck.dll.9"
 
         ; Clean up the old System32 install location used by earlier releases.
         !insertmacro SetStep "Cleaning up old 32-bit install location"

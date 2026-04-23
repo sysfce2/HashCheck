@@ -37,11 +37,12 @@ UINT16 g_uWinVer;
 
 // Prototypes for the self-registration/install/uninstall helper functions
 STDAPI DllRegisterServerEx( LPCTSTR );
-HRESULT Install( BOOL, BOOL );
-HRESULT Uninstall( );
-BOOL WINAPI InstallFile( LPCTSTR, LPTSTR, LPTSTR );
+HRESULT Install( BOOL, BOOL, BOOL );
+HRESULT Uninstall( BOOL );
+BOOL WINAPI InstallFile( LPCTSTR, LPTSTR, LPTSTR, BOOL * );
 BOOL WINAPI GetProgramFilesDirectory( LPTSTR, UINT );
 VOID WINAPI UnregisterSparsePackage( );
+VOID WINAPI ShowRebootRequiredMessage( BOOL );
 #ifdef _WIN64
 BOOL WINAPI Uninstall32BitDll( LPCTSTR );
 #endif
@@ -300,6 +301,8 @@ STDAPI DllInstall( BOOL bInstall, LPCWSTR pszCmdLine )
 	// To install with both options above
 	// regsvr32.exe /i:"NoUninstall NoCopy" /n HashCheck.dll
 	//
+	// To suppress HashCheck reboot prompts, add NoRebootPrompt to the /i command line.
+	//
 	// To uninstall
 	// regsvr32.exe /u /i /n HashCheck.dll
 	//
@@ -310,10 +313,13 @@ STDAPI DllInstall( BOOL bInstall, LPCWSTR pszCmdLine )
 	// a UnregisterDlls INF section, if the registration flags are set to 2.
 	// Consult the documentation for RegisterDlls/UnregisterDlls for details.
 
+	BOOL bShowRebootPrompt = (pszCmdLine == NULL || StrStrIW(pszCmdLine, L"NoRebootPrompt") == NULL);
+
 	return( (bInstall) ?
 		Install(pszCmdLine == NULL || StrStrIW(pszCmdLine, L"NoUninstall") == NULL,
-                pszCmdLine == NULL || StrStrIW(pszCmdLine, L"NoCopy")      == NULL) :
-		Uninstall()
+                pszCmdLine == NULL || StrStrIW(pszCmdLine, L"NoCopy")      == NULL,
+                bShowRebootPrompt) :
+		Uninstall(bShowRebootPrompt)
 	);
 }
 
@@ -324,12 +330,13 @@ BOOL WINAPI GetProgramFilesDirectory( LPTSTR lpszPath, UINT cchPath )
 	       SSLen(lpszPath) < cchPath);
 }
 
-HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile )
+HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile, BOOL bShowRebootPrompt )
 {
 	TCHAR szCurrentDllPath[MAX_PATH << 1];
 	GetModuleFileName(g_hModThisDll, szCurrentDllPath, countof(szCurrentDllPath));
 
 	TCHAR szInstallDir[MAX_PATH + 0x20];
+	BOOL bRebootRequired = FALSE;
 
 	if (GetProgramFilesDirectory(szInstallDir, countof(szInstallDir)))
 	{
@@ -341,7 +348,7 @@ HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile )
 
 		LPTSTR lpszTargetPath = (bCopyFile) ? lpszPath : szCurrentDllPath;
 
-		if ( (!bCopyFile || InstallFile(szCurrentDllPath, lpszTargetPath, lpszPathAppend)) &&
+		if ( (!bCopyFile || InstallFile(szCurrentDllPath, lpszTargetPath, lpszPathAppend, &bRebootRequired)) &&
 		     DllRegisterServerEx(lpszTargetPath) == S_OK )
 		{
 			HKEY hKey, hKeySub;
@@ -389,7 +396,9 @@ HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile )
 			if (bRegisterUninstaller && (hKey = RegOpen(HKEY_LOCAL_MACHINE, TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\%s"), CLSNAME_STR_HashCheck, TRUE)))
 			{
 				TCHAR szUninstall[MAX_PATH << 1];
+				TCHAR szQuietUninstall[MAX_PATH << 1];
 				StringCchPrintf(szUninstall, countof(szUninstall), TEXT("regsvr32.exe /u /i /n /s \"%s\""), lpszTargetPath);
+				StringCchPrintf(szQuietUninstall, countof(szQuietUninstall), TEXT("regsvr32.exe /u /i:\"NoRebootPrompt\" /n /s \"%s\""), lpszTargetPath);
 
 				static const TCHAR szURLFull[] = TEXT("https://github.com/idrassi/HashCheck/issues");
 				TCHAR szURLBase[countof(szURLFull)];
@@ -404,10 +413,14 @@ HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile )
 				RegSetDW(hKey, TEXT("NoModify"), 1);
 				RegSetDW(hKey, TEXT("NoRepair"), 1);
 				RegSetSZ(hKey, TEXT("UninstallString"), szUninstall);
+				RegSetSZ(hKey, TEXT("QuietUninstallString"), szQuietUninstall);
 				RegSetSZ(hKey, TEXT("URLInfoAbout"), szURLBase);
 				RegSetSZ(hKey, TEXT("URLUpdateInfo"), TEXT("https://github.com/idrassi/HashCheck/releases/latest"));
 				RegCloseKey(hKey);
 			}
+
+			if (bShowRebootPrompt && bRebootRequired)
+				ShowRebootRequiredMessage(TRUE);
 
 			return(S_OK);
 
@@ -418,9 +431,10 @@ HRESULT Install( BOOL bRegisterUninstaller, BOOL bCopyFile )
 	return(E_FAIL);
 }
 
-HRESULT Uninstall( )
+HRESULT Uninstall( BOOL bShowRebootPrompt )
 {
 	HRESULT hr = S_OK;
+	BOOL bRebootRequired = FALSE;
 
 	TCHAR szCurrentDllPath[MAX_PATH << 1];
 	TCHAR szTemp[MAX_PATH << 1];
@@ -478,7 +492,10 @@ HRESULT Uninstall( )
 	}
 
 	// Schedule the DLL to be deleted at shutdown/reboot
-	if (!MoveFileEx(lpszFileToDelete, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)) hr = E_FAIL;
+	if (MoveFileEx(lpszFileToDelete, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+		bRebootRequired = TRUE;
+	else
+		hr = E_FAIL;
 
 #ifdef _WIN64
 	// Remove the x64 TBB runtime installed beside the shell extension.
@@ -494,7 +511,17 @@ HRESULT Uninstall( )
 				sizeof(szTbbPath) - BYTEDIFF(pszFileName + 1, szTbbPath),
 				TEXT("tbb12.dll")
 			);
-			MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+			if (PathFileExists(szTbbPath) && !DeleteFile(szTbbPath))
+			{
+				DWORD dwDeleteError = GetLastError();
+				if (dwDeleteError != ERROR_FILE_NOT_FOUND)
+				{
+					if (MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+						bRebootRequired = TRUE;
+					else
+						hr = E_FAIL;
+				}
+			}
 
 			StringCbCopy(
 				pszFileName + 1,
@@ -516,7 +543,16 @@ HRESULT Uninstall( )
 				TEXT("HashCheckPackageHost.exe")
 			);
 			if (!DeleteFile(szTbbPath))
-				MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+			{
+				DWORD dwDeleteError = GetLastError();
+				if (dwDeleteError != ERROR_FILE_NOT_FOUND)
+				{
+					if (MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+						bRebootRequired = TRUE;
+					else
+						hr = E_FAIL;
+				}
+			}
 		}
 	}
 #endif
@@ -542,7 +578,22 @@ HRESULT Uninstall( )
 	// We don't need the uninstall strings any more...
 	RegDelete(HKEY_LOCAL_MACHINE, TEXT("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\%s"), CLSNAME_STR_HashCheck);
 
+	if (bShowRebootPrompt && bRebootRequired)
+		ShowRebootRequiredMessage(FALSE);
+
 	return(hr);
+}
+
+VOID WINAPI ShowRebootRequiredMessage( BOOL bInstall )
+{
+	MessageBox(
+		NULL,
+		bInstall ?
+			TEXT("A reboot is required to complete installation and use the newly installed HashCheck components.") :
+			TEXT("A reboot is required to complete uninstallation and remove HashCheck files that are still in use."),
+		TEXT(HASHCHECK_NAME_STR),
+		MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND
+	);
 }
 
 VOID WINAPI UnregisterSparsePackage( )
@@ -612,7 +663,7 @@ BOOL WINAPI Uninstall32BitDll( LPCTSTR lpszDllPath )
 	if (FAILED(StringCchPrintf(
 		szCommandLine,
 		countof(szCommandLine),
-		TEXT("regsvr32.exe /u /i /n /s \"%s\""),
+		TEXT("regsvr32.exe /u /i:\"NoRebootPrompt\" /n /s \"%s\""),
 		lpszDllPath)))
 	{
 		return(FALSE);
@@ -638,7 +689,7 @@ BOOL WINAPI Uninstall32BitDll( LPCTSTR lpszDllPath )
 }
 #endif
 
-BOOL WINAPI InstallFile( LPCTSTR lpszSource, LPTSTR lpszDest, LPTSTR lpszDestAppend )
+BOOL WINAPI InstallFile( LPCTSTR lpszSource, LPTSTR lpszDest, LPTSTR lpszDestAppend, BOOL *pbRebootRequired )
 {
 	static const TCHAR szInstallFolder[] = TEXT("HashCheck");
 	static const TCHAR szDestFile[] = TEXT("\\") TEXT(HASHCHECK_FILENAME_STR);
@@ -677,8 +728,12 @@ BOOL WINAPI InstallFile( LPCTSTR lpszSource, LPTSTR lpszDest, LPTSTR lpszDestApp
 
 		*lpszTempAppend = ch;
 
-		if (MoveFileEx(lpszDest, szTemp, MOVEFILE_REPLACE_EXISTING))
-			MoveFileEx(szTemp, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+		if (MoveFileEx(lpszDest, szTemp, MOVEFILE_REPLACE_EXISTING) &&
+		    MoveFileEx(szTemp, NULL, MOVEFILE_DELAY_UNTIL_REBOOT) &&
+		    pbRebootRequired)
+		{
+			*pbRebootRequired = TRUE;
+		}
 	}
 
 	return(FALSE);
