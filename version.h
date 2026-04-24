@@ -3,7 +3,7 @@
  * Original work copyright (C) Kai Liu.  All rights reserved.
  * Modified work copyright (C) 2014, 2016 Christopher Gurnee.  All rights reserved.
  * Modified work copyright (C) 2016 Tim Schlueter.  All rights reserved.
- * Modified work copyright (C) 2021 Mounir IDRASSI.  All rights reserved.
+ * Modified work copyright (C) 2021-2026 Mounir IDRASSI.  All rights reserved.
  *
  * Please refer to readme.txt for information about this source code.
  * Please refer to license.txt for details about distribution and modification.
@@ -24,7 +24,7 @@
 #endif
 
 // Tail portion of the copyright string for the version resource
-#define HASHCHECK_COPYRIGHT_STR "2008-2021 Kai Liu, Christopher Gurnee, Tim Schlueter, Mounir Idrassi et al. All rights reserved."
+#define HASHCHECK_COPYRIGHT_STR "2008-2026 Kai Liu, Christopher Gurnee, Tim Schlueter, Mounir IDRASSI et al. All rights reserved."
 
 // Name of the DLL
 #define HASHCHECK_FILENAME_STR "HashCheck.dll"

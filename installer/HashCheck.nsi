@@ -79,7 +79,7 @@ VIProductVersion "2.6.0.0"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "HashCheck Shell Extension"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion" "2.6.0.0"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "Comments" "Installer distributed from https://github.com/idrassi/HashCheck/releases"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "Copyright © 2008-2021 Kai Liu, Christopher Gurnee, Tim Schlueter, Mounir IDRASSI, et al. All rights reserved."
+VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "Copyright © 2008-2026 Kai Liu, Christopher Gurnee, Tim Schlueter, Mounir IDRASSI, et al. All rights reserved."
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "Installer (x86/x64) from https://github.com/idrassi/HashCheck/releases"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "2.6.0.0"
 

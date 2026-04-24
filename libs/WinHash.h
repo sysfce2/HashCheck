@@ -4,7 +4,7 @@
  * Original work copyright (C) Kai Liu.  All rights reserved.
  * Modified work copyright (C) 2014, 2016 Christopher Gurnee.  All rights reserved.
  * Modified work copyright (C) 2016 Tim Schlueter.  All rights reserved.
- * Modified work copyright (C) 2021 Mounir IDRASSI.  All rights reserved.
+ * Modified work copyright (C) 2021-2026 Mounir IDRASSI.  All rights reserved.
  * 
  * This is a wrapper for the CRC32, MD5, SHA1, SHA2-256, SHA2-512, Blake3 and
  * xxHash algorithms.

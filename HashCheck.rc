@@ -1,5 +1,5 @@
 //
-// NOTE: This file is encoded in UTF-8.
+// NOTE: This file is encoded in UTF-8.
 //
 
 /**
@@ -53,8 +53,10 @@ VS_VERSION_INFO     VERSIONINFO
 		{
 			VALUE "FileDescription", HASHCHECK_NAME_STR
 			VALUE "FileVersion", HASHCHECK_VERSION_STR ARCH_NAME_TAIL
-			VALUE "LegalCopyright", "Copyright © " HASHCHECK_COPYRIGHT_STR
+			VALUE "LegalCopyright", "Copyright (C) " HASHCHECK_COPYRIGHT_STR
 			VALUE "OriginalFilename", HASHCHECK_FILENAME_STR
+			VALUE "ProductName", HASHCHECK_NAME_STR
+			VALUE "ProductVersion", HASHCHECK_VERSION_STR
 		}
 	}
 	BLOCK "VarFileInfo"

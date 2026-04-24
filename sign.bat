@@ -17,7 +17,7 @@ if not exist "%NSISDIR%\makensis.exe" (
 set "PATH=%PATH%;%WSDK81%\bin\x86;%NSISDIR%;C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x86"
 
 rem sign using SHA-256
-signtool sign /v /sha1 86E1D426731E79117452F090188A828426B29B5F /ac GlobalSign_SHA256_EV_CodeSigning_CA.cer /fd sha256 /tr http://timestamp.digicert.com /td SHA256 "Bin\Win32\Release\HashCheck.dll" "Bin\x64\Release\HashCheck.dll" "Bin\x64\Release\HashCheckPackageHost.exe"
+signtool sign /v /sha1 86E1D426731E79117452F090188A828426B29B5F /ac GlobalSign_SHA256_EV_CodeSigning_CA.cer /fd sha256 /tr http://timestamp.digicert.com /td SHA256 "Bin\Win32\Release\HashCheck.dll" "Bin\x64\Release\HashCheck.dll" "Bin\Win32\Release\HashCheckPackageHost.exe" "Bin\x64\Release\HashCheckPackageHost.exe" "Bin\x64\Release\tbb12.dll"
 if errorlevel 1 goto error
 
 if exist "Bin\HashCheckWin11.msix" del /f /q "Bin\HashCheckWin11.msix"
