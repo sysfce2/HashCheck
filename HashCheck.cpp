@@ -45,6 +45,10 @@ VOID WINAPI UnregisterSparsePackage( );
 VOID WINAPI ShowRebootRequiredMessage( BOOL );
 #ifdef _WIN64
 BOOL WINAPI Uninstall32BitDll( LPCTSTR );
+BOOL WINAPI DeleteFileOrSchedule( LPCTSTR, BOOL * );
+BOOL WINAPI DeleteInstalledFile( LPTSTR, PTSTR, SIZE_T, LPCTSTR, BOOL * );
+BOOL WINAPI DeleteInstalledFilePattern( LPTSTR, PTSTR, SIZE_T, LPCTSTR, BOOL * );
+BOOL WINAPI DeleteDirectoryTree( LPTSTR, SIZE_T, BOOL * );
 #endif
 
 
@@ -498,61 +502,35 @@ HRESULT Uninstall( BOOL bShowRebootPrompt )
 		hr = E_FAIL;
 
 #ifdef _WIN64
-	// Remove the x64 TBB runtime installed beside the shell extension.
+	// Remove files installed beside the x64 shell extension.
 	{
-		TCHAR szTbbPath[MAX_PATH << 1];
-		StringCbCopy(szTbbPath, sizeof(szTbbPath), szCurrentDllPath);
+		TCHAR szInstallPath[MAX_PATH << 1];
+		StringCbCopy(szInstallPath, sizeof(szInstallPath), szCurrentDllPath);
 
-		PTSTR pszFileName = StrRChr(szTbbPath, NULL, TEXT('\\'));
+		PTSTR pszFileName = StrRChr(szInstallPath, NULL, TEXT('\\'));
 		if (pszFileName)
 		{
-			StringCbCopy(
-				pszFileName + 1,
-				sizeof(szTbbPath) - BYTEDIFF(pszFileName + 1, szTbbPath),
-				TEXT("tbb12.dll")
-			);
-			if (PathFileExists(szTbbPath) && !DeleteFile(szTbbPath))
-			{
-				DWORD dwDeleteError = GetLastError();
-				if (dwDeleteError != ERROR_FILE_NOT_FOUND)
-				{
-					if (MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
-						bRebootRequired = TRUE;
-					else
-						hr = E_FAIL;
-				}
-			}
+			++pszFileName;
+			SIZE_T cchFileName = countof(szInstallPath) - (pszFileName - szInstallPath);
 
-			StringCbCopy(
-				pszFileName + 1,
-				sizeof(szTbbPath) - BYTEDIFF(pszFileName + 1, szTbbPath),
-				TEXT("tbb12-LICENSE.txt")
-			);
-			DeleteFile(szTbbPath);
+			if (!DeleteInstalledFile(szInstallPath, pszFileName, cchFileName, TEXT("tbb12.dll"), &bRebootRequired))
+				hr = E_FAIL;
 
-			StringCbCopy(
-				pszFileName + 1,
-				sizeof(szTbbPath) - BYTEDIFF(pszFileName + 1, szTbbPath),
-				PACKAGE_FILE_STR_HashCheck
-			);
-			DeleteFile(szTbbPath);
+			if (!DeleteInstalledFile(szInstallPath, pszFileName, cchFileName, TEXT("tbb12-LICENSE.txt"), &bRebootRequired))
+				hr = E_FAIL;
 
-			StringCbCopy(
-				pszFileName + 1,
-				sizeof(szTbbPath) - BYTEDIFF(pszFileName + 1, szTbbPath),
-				TEXT("HashCheckPackageHost.exe")
-			);
-			if (!DeleteFile(szTbbPath))
-			{
-				DWORD dwDeleteError = GetLastError();
-				if (dwDeleteError != ERROR_FILE_NOT_FOUND)
-				{
-					if (MoveFileEx(szTbbPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
-						bRebootRequired = TRUE;
-					else
-						hr = E_FAIL;
-				}
-			}
+			if (!DeleteInstalledFile(szInstallPath, pszFileName, cchFileName, PACKAGE_FILE_STR_HashCheck, &bRebootRequired))
+				hr = E_FAIL;
+
+			if (!DeleteInstalledFile(szInstallPath, pszFileName, cchFileName, TEXT("HashCheckPackageHost.exe"), &bRebootRequired))
+				hr = E_FAIL;
+
+			if (!DeleteInstalledFilePattern(szInstallPath, pszFileName, cchFileName, TEXT("resources*.pri"), &bRebootRequired))
+				hr = E_FAIL;
+
+			if (FAILED(StringCchCopy(pszFileName, cchFileName, TEXT("Assets"))) ||
+			    !DeleteDirectoryTree(szInstallPath, countof(szInstallPath), &bRebootRequired))
+				hr = E_FAIL;
 		}
 	}
 #endif
@@ -645,6 +623,165 @@ VOID WINAPI UnregisterSparsePackage( )
 }
 
 #ifdef _WIN64
+BOOL WINAPI DeleteFileOrSchedule( LPCTSTR lpszPath, BOOL *pbRebootRequired )
+{
+	if (DeleteFile(lpszPath))
+		return(TRUE);
+
+	DWORD dwDeleteError = GetLastError();
+	if (dwDeleteError == ERROR_FILE_NOT_FOUND || dwDeleteError == ERROR_PATH_NOT_FOUND)
+		return(TRUE);
+
+	if (MoveFileEx(lpszPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+	{
+		if (pbRebootRequired)
+			*pbRebootRequired = TRUE;
+
+		return(TRUE);
+	}
+
+	return(FALSE);
+}
+
+BOOL WINAPI DeleteInstalledFile( LPTSTR lpszPath, PTSTR lpszFileName, SIZE_T cchFileName, LPCTSTR lpszFileNameToDelete, BOOL *pbRebootRequired )
+{
+	if (FAILED(StringCchCopy(lpszFileName, cchFileName, lpszFileNameToDelete)))
+		return(FALSE);
+
+	return(DeleteFileOrSchedule(lpszPath, pbRebootRequired));
+}
+
+BOOL WINAPI DeleteInstalledFilePattern( LPTSTR lpszPath, PTSTR lpszFileName, SIZE_T cchFileName, LPCTSTR lpszPattern, BOOL *pbRebootRequired )
+{
+	if (FAILED(StringCchCopy(lpszFileName, cchFileName, lpszPattern)))
+		return(FALSE);
+
+	WIN32_FIND_DATA fd;
+	HANDLE hFind = FindFirstFile(lpszPath, &fd);
+
+	if (hFind == INVALID_HANDLE_VALUE)
+	{
+		DWORD dwFindError = GetLastError();
+		return(dwFindError == ERROR_FILE_NOT_FOUND || dwFindError == ERROR_PATH_NOT_FOUND);
+	}
+
+	BOOL bSuccess = TRUE;
+
+	do
+	{
+		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+		{
+			if (FAILED(StringCchCopy(lpszFileName, cchFileName, fd.cFileName)) ||
+			    !DeleteFileOrSchedule(lpszPath, pbRebootRequired))
+				bSuccess = FALSE;
+		}
+	}
+	while (FindNextFile(hFind, &fd));
+
+	DWORD dwFindError = GetLastError();
+	if (dwFindError != ERROR_NO_MORE_FILES)
+		bSuccess = FALSE;
+
+	FindClose(hFind);
+
+	return(bSuccess);
+}
+
+BOOL WINAPI DeleteDirectoryTree( LPTSTR lpszPath, SIZE_T cchPath, BOOL *pbRebootRequired )
+{
+	DWORD dwAttributes = GetFileAttributes(lpszPath);
+	if (dwAttributes == INVALID_FILE_ATTRIBUTES)
+	{
+		DWORD dwAttributeError = GetLastError();
+		return(dwAttributeError == ERROR_FILE_NOT_FOUND || dwAttributeError == ERROR_PATH_NOT_FOUND);
+	}
+
+	if ((dwAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+		return(DeleteFileOrSchedule(lpszPath, pbRebootRequired));
+
+	SIZE_T cchBase = SSLen(lpszPath);
+	PTSTR lpszAppend = lpszPath + cchBase;
+
+	if (cchBase && *(lpszAppend - 1) != TEXT('\\'))
+	{
+		if (cchBase + 1 >= cchPath)
+			return(FALSE);
+
+		*lpszAppend++ = TEXT('\\');
+	}
+
+	SIZE_T cchAppend = cchPath - (lpszAppend - lpszPath);
+	if (FAILED(StringCchCopy(lpszAppend, cchAppend, TEXT("*"))))
+	{
+		lpszPath[cchBase] = 0;
+		return(FALSE);
+	}
+
+	WIN32_FIND_DATA fd;
+	HANDLE hFind = FindFirstFile(lpszPath, &fd);
+	BOOL bSuccess = TRUE;
+
+	if (hFind == INVALID_HANDLE_VALUE)
+	{
+		DWORD dwFindError = GetLastError();
+		if (dwFindError != ERROR_FILE_NOT_FOUND && dwFindError != ERROR_PATH_NOT_FOUND)
+			bSuccess = FALSE;
+	}
+	else
+	{
+		do
+		{
+			if (fd.cFileName[0] == TEXT('.') &&
+			    (fd.cFileName[1] == 0 || (fd.cFileName[1] == TEXT('.') && fd.cFileName[2] == 0)))
+				continue;
+
+			if (FAILED(StringCchCopy(lpszAppend, cchAppend, fd.cFileName)))
+			{
+				bSuccess = FALSE;
+				continue;
+			}
+
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			{
+				if (!DeleteDirectoryTree(lpszPath, cchPath, pbRebootRequired))
+					bSuccess = FALSE;
+			}
+			else if (!DeleteFileOrSchedule(lpszPath, pbRebootRequired))
+			{
+				bSuccess = FALSE;
+			}
+		}
+		while (FindNextFile(hFind, &fd));
+
+		DWORD dwFindError = GetLastError();
+		if (dwFindError != ERROR_NO_MORE_FILES)
+			bSuccess = FALSE;
+
+		FindClose(hFind);
+	}
+
+	lpszPath[cchBase] = 0;
+
+	if (!RemoveDirectory(lpszPath))
+	{
+		DWORD dwRemoveError = GetLastError();
+		if (dwRemoveError != ERROR_FILE_NOT_FOUND && dwRemoveError != ERROR_PATH_NOT_FOUND)
+		{
+			if (MoveFileEx(lpszPath, NULL, MOVEFILE_DELAY_UNTIL_REBOOT))
+			{
+				if (pbRebootRequired)
+					*pbRebootRequired = TRUE;
+			}
+			else
+			{
+				bSuccess = FALSE;
+			}
+		}
+	}
+
+	return(bSuccess);
+}
+
 BOOL WINAPI Uninstall32BitDll( LPCTSTR lpszDllPath )
 {
 	if (!PathFileExists(lpszDllPath))
