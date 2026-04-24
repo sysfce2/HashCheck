@@ -164,8 +164,7 @@ VOID CALLBACK HashVerify_RunDLLW( HWND hWnd, HINSTANCE hInstance,
 	{
 		if (WStrToTStr(pszCmdLine, pszPath, (UINT)cchPath))
 		{
-			++g_cRefThisDll;
-			CoAddRefServerProcess();
+			InterlockedIncrement(&g_cRefThisDll);
 			HashVerifyThread(pszPath);
 		}
 		else
@@ -237,7 +236,6 @@ DWORD WINAPI HashVerifyThread( PTSTR pszPath )
 	HostRelease(uHostCookie);
 
 	InterlockedDecrement(&g_cRefThisDll);
-	CoReleaseServerProcess();
 	if (bCoUninitialize)
 		CoUninitialize();
 	return(0);

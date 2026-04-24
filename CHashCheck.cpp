@@ -251,12 +251,10 @@ STDMETHODIMP CHashCheck::InvokeCommand( LPCMINVOKECOMMANDINFO pici )
 
 		SSCpy(pszPathCopy, pszPath);
 		InterlockedIncrement(&g_cRefThisDll);
-		CoAddRefServerProcess();
 
 		HANDLE hThread = CreateThreadCRT(HashVerifyThread, pszPathCopy);
 		if (!hThread)
 		{
-			CoReleaseServerProcess();
 			InterlockedDecrement(&g_cRefThisDll);
 			free(pszPathCopy);
 			return(E_FAIL);
@@ -406,7 +404,6 @@ STDMETHODIMP CHashCheck::Drop( LPDATAOBJECT pdtobj, DWORD grfKeyState, POINTL pt
 				     (lpszPath = (LPTSTR)malloc((cchPath + 1) * sizeof(TCHAR))) )
 				{
 					InterlockedIncrement(&g_cRefThisDll);
-					CoAddRefServerProcess();
 
 					HANDLE hThread;
 
@@ -421,7 +418,6 @@ STDMETHODIMP CHashCheck::Drop( LPDATAOBJECT pdtobj, DWORD grfKeyState, POINTL pt
 					else
 					{
 						free(lpszPath);
-						CoReleaseServerProcess();
 						InterlockedDecrement(&g_cRefThisDll);
 					}
 				}

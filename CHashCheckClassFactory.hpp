@@ -40,7 +40,15 @@ class CHashCheckClassFactory : public IClassFactory
 
 		// IClassFactory members
 		STDMETHODIMP CreateInstance( LPUNKNOWN, REFIID, LPVOID * );
-		STDMETHODIMP LockServer( BOOL ) { return(E_NOTIMPL); }
+		STDMETHODIMP LockServer( BOOL fLock )
+		{
+			if (fLock)
+				InterlockedIncrement(&g_cRefThisDll);
+			else
+				InterlockedDecrement(&g_cRefThisDll);
+
+			return(S_OK);
+		}
 };
 
 typedef CHashCheckClassFactory *LPCHASHCHECKCLASSFACTORY;

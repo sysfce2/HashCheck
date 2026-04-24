@@ -7,30 +7,39 @@
  **/
 
 #include "CHashCheckExplorerCommand.hpp"
+#include "HashCheckUI.h"
 #include "HashCheckOptions.h"
 #include "libs/WinHash.h"
 #include <Strsafe.h>
 
-static BOOL IsChecksumFilePath( PCTSTR pszPath, BOOL bCheckAttributes )
+static BOOL HasChecksumExtension( PCWSTR pszName )
 {
-	if (bCheckAttributes)
-	{
-		DWORD dwAttributes = GetFileAttributes(pszPath);
-		if (dwAttributes == INVALID_FILE_ATTRIBUTES || (dwAttributes & FILE_ATTRIBUTE_DIRECTORY))
-			return(FALSE);
-	}
-
-	PCTSTR pszExt = StrRChr(pszPath, NULL, TEXT('.'));
+	PCWSTR pszExt = StrRChrW(pszName, NULL, L'.');
 	if (!pszExt)
 		return(FALSE);
 
 	for (UINT i = 0; i < countof(g_szHashExtsTab); ++i)
 	{
-		if (StrCmpI(pszExt, g_szHashExtsTab[i]) == 0)
+		if (StrCmpIW(pszExt, g_szHashExtsTab[i]) == 0)
 			return(TRUE);
 	}
 
 	return(FALSE);
+}
+
+static BOOL IsChecksumFilePath( PCWSTR pszPath, BOOL bCheckAttributes )
+{
+	if (!HasChecksumExtension(pszPath))
+		return(FALSE);
+
+	if (bCheckAttributes)
+	{
+		DWORD dwAttributes = GetFileAttributesW(pszPath);
+		if (dwAttributes == INVALID_FILE_ATTRIBUTES || (dwAttributes & FILE_ATTRIBUTE_DIRECTORY))
+			return(FALSE);
+	}
+
+	return(TRUE);
 }
 
 static BOOL IsMenuVisibleByOptions( )
@@ -78,24 +87,29 @@ static HRESULT GetShellItemPath( IShellItemArray *psia, DWORD iItem, PWSTR *ppsz
 	return(hr);
 }
 
-static BOOL HasFileSystemSelection( IShellItemArray *psia, BOOL bCheckPaths )
+static HRESULT GetShellItemParsingName( IShellItemArray *psia, DWORD iItem, PWSTR *ppszName )
+{
+	*ppszName = NULL;
+
+	IShellItem *pItem = NULL;
+	HRESULT hr = psia->GetItemAt(iItem, &pItem);
+	if (SUCCEEDED(hr))
+	{
+		hr = pItem->GetDisplayName(SIGDN_PARENTRELATIVEPARSING, ppszName);
+		pItem->Release();
+	}
+
+	return(hr);
+}
+
+static BOOL HasSelection( IShellItemArray *psia, DWORD *pcItems )
 {
 	DWORD cItems = 0;
 	if (!psia || FAILED(psia->GetCount(&cItems)) || !cItems)
 		return(FALSE);
 
-	if (!bCheckPaths)
-		return(TRUE);
-
-	for (DWORD iItem = 0; iItem < cItems; ++iItem)
-	{
-		PWSTR pszPath = NULL;
-		HRESULT hr = GetShellItemPath(psia, iItem, &pszPath);
-		if (FAILED(hr))
-			return(FALSE);
-
-		CoTaskMemFree(pszPath);
-	}
+	if (pcItems)
+		*pcItems = cItems;
 
 	return(TRUE);
 }
@@ -109,8 +123,22 @@ static BOOL HasSingleChecksumFileSelection( IShellItemArray *psia, BOOL bCheckAt
 	if (FAILED(psia->GetCount(&cItems)) || cItems != 1)
 		return(FALSE);
 
+	PWSTR pszName = NULL;
+	HRESULT hr = GetShellItemParsingName(psia, 0, &pszName);
+	if (FAILED(hr))
+		return(FALSE);
+
+	BOOL bHasChecksumExtension = HasChecksumExtension(pszName);
+	CoTaskMemFree(pszName);
+
+	if (!bHasChecksumExtension)
+		return(FALSE);
+
+	if (!bCheckAttributes)
+		return(TRUE);
+
 	PWSTR pszPath = NULL;
-	HRESULT hr = GetShellItemPath(psia, 0, &pszPath);
+	hr = GetShellItemPath(psia, 0, &pszPath);
 	if (FAILED(hr))
 		return(FALSE);
 
@@ -293,6 +321,89 @@ static HRESULT LaunchPackageHost( PCWSTR pszVerb, PCWSTR pszArgument )
 	return(hr);
 }
 
+typedef struct {
+	IStream *pstmShellItemArray;
+} HCEC_CREATE_THREAD_CONTEXT, *PHCEC_CREATE_THREAD_CONTEXT;
+
+static DWORD WINAPI CreateCommandThread( PHCEC_CREATE_THREAD_CONTEXT pctx )
+{
+	HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	BOOL bCoUninitialize = SUCCEEDED(hrCoInit);
+
+	if (SUCCEEDED(hrCoInit))
+	{
+		IShellItemArray *psia = NULL;
+		HRESULT hr = CoGetInterfaceAndReleaseStream(
+			pctx->pstmShellItemArray,
+			IID_IShellItemArray,
+			(LPVOID *)&psia
+		);
+		pctx->pstmShellItemArray = NULL;
+
+		if (SUCCEEDED(hr))
+		{
+			WCHAR szListPath[MAX_PATH + 1];
+			hr = WritePathListFile(psia, szListPath, countof(szListPath));
+			if (SUCCEEDED(hr))
+			{
+				hr = LaunchPackageHost(L"/hashcheck-create", szListPath);
+				if (FAILED(hr))
+					DeleteFileW(szListPath);
+			}
+
+			psia->Release();
+		}
+	}
+
+	if (pctx->pstmShellItemArray)
+		pctx->pstmShellItemArray->Release();
+
+	free(pctx);
+
+	if (bCoUninitialize)
+		CoUninitialize();
+
+	InterlockedDecrement(&g_cRefThisDll);
+	return(0);
+}
+
+static HRESULT StartCreateCommandThread( IShellItemArray *psia )
+{
+	if (!psia)
+		return(E_INVALIDARG);
+
+	PHCEC_CREATE_THREAD_CONTEXT pctx = (PHCEC_CREATE_THREAD_CONTEXT)malloc(sizeof(HCEC_CREATE_THREAD_CONTEXT));
+	if (!pctx)
+		return(E_OUTOFMEMORY);
+
+	pctx->pstmShellItemArray = NULL;
+
+	HRESULT hr = CoMarshalInterThreadInterfaceInStream(
+		IID_IShellItemArray,
+		psia,
+		&pctx->pstmShellItemArray
+	);
+	if (FAILED(hr))
+	{
+		free(pctx);
+		return(hr);
+	}
+
+	InterlockedIncrement(&g_cRefThisDll);
+
+	HANDLE hThread = CreateThreadCRT(CreateCommandThread, pctx);
+	if (!hThread)
+	{
+		InterlockedDecrement(&g_cRefThisDll);
+		pctx->pstmShellItemArray->Release();
+		free(pctx);
+		return(E_FAIL);
+	}
+
+	CloseHandle(hThread);
+	return(S_OK);
+}
+
 CHashCheckExplorerCommand::CHashCheckExplorerCommand( HASHCHECK_EXPLORER_COMMAND command )
 {
 	InterlockedIncrement(&g_cRefThisDll);
@@ -376,12 +487,25 @@ STDMETHODIMP CHashCheckExplorerCommand::GetState( IShellItemArray *psia, BOOL fO
 	if (!IsMenuVisibleByOptions())
 		return(S_OK);
 
+	DWORD cItems = 0;
+	if (!HasSelection(psia, &cItems))
+		return(S_OK);
+
 	if (m_command == HCEC_VERIFY)
 	{
-		if (HasSingleChecksumFileSelection(psia, fOkToBeSlow))
+		if (cItems != 1)
+			return(S_OK);
+
+		if (!fOkToBeSlow)
+		{
+			*pCmdState = ECS_DISABLED;
+			return(E_PENDING);
+		}
+
+		if (HasSingleChecksumFileSelection(psia, TRUE))
 			*pCmdState = ECS_ENABLED;
 	}
-	else if (HasFileSystemSelection(psia, fOkToBeSlow))
+	else
 	{
 		*pCmdState = ECS_ENABLED;
 	}
@@ -406,16 +530,10 @@ STDMETHODIMP CHashCheckExplorerCommand::Invoke( IShellItemArray *psia, IBindCtx 
 		return(hr);
 	}
 
-	WCHAR szListPath[MAX_PATH + 1];
-	HRESULT hr = WritePathListFile(psia, szListPath, countof(szListPath));
-	if (FAILED(hr))
-		return(hr);
+	if (!HasSelection(psia, NULL))
+		return(E_INVALIDARG);
 
-	hr = LaunchPackageHost(L"/hashcheck-create", szListPath);
-	if (FAILED(hr))
-		DeleteFileW(szListPath);
-
-	return(hr);
+	return(StartCreateCommandThread(psia));
 }
 
 STDMETHODIMP CHashCheckExplorerCommand::GetFlags( EXPCMDFLAGS *pFlags )

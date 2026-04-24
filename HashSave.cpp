@@ -182,9 +182,6 @@ PHASHSAVECONTEXT WINAPI HashSaveCreateContext( HWND hWndOwner, HSIMPLELIST hList
 
 		InterlockedIncrement(&g_cRefThisDll);
 		SLAddRef(hListRaw);
-		// Balance the asynchronous UI/work lifetime against COM server
-		// shutdown in hosts that honor the server-process lock count.
-		CoAddRefServerProcess();
 	}
 
 	return(phsctx);
@@ -196,7 +193,6 @@ VOID WINAPI HashSaveReleaseContext( PHASHSAVECONTEXT phsctx )
 
 	SLRelease(hListRaw);
 	InterlockedDecrement(&g_cRefThisDll);
-	CoReleaseServerProcess();
 }
 
 BOOL WINAPI HashSaveStartThread( PHASHSAVECONTEXT phsctx )
@@ -266,7 +262,6 @@ DWORD WINAPI HashSaveThread( PHASHSAVECONTEXT phsctx )
 	HostRelease(uHostCookie);
 
 	InterlockedDecrement(&g_cRefThisDll);
-	CoReleaseServerProcess();
 	if (bCoUninitialize)
 		CoUninitialize();
 	return(0);
