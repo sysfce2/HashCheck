@@ -13,7 +13,8 @@
 
 enum HASHCHECK_EXPLORER_COMMAND {
 	HCEC_CREATE = 0,
-	HCEC_VERIFY = 1
+	HCEC_VERIFY = 1,
+	HCEC_OPTIONS = 2
 };
 
 class CHashCheckExplorerCommand : public IExplorerCommand, public IObjectWithSite

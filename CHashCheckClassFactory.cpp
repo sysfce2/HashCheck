@@ -49,6 +49,10 @@ STDMETHODIMP CHashCheckClassFactory::CreateInstance( LPUNKNOWN pUnkOuter, REFIID
 			pUnknown = static_cast<IExplorerCommand *>(new(std::nothrow) CHashCheckExplorerCommand(HCEC_VERIFY));
 			break;
 
+		case HCCO_EXPLORER_OPTIONS:
+			pUnknown = static_cast<IExplorerCommand *>(new(std::nothrow) CHashCheckExplorerCommand(HCEC_OPTIONS));
+			break;
+
 		default:
 			pUnknown = static_cast<IShellExtInit *>(new(std::nothrow) CHashCheck);
 			break;

@@ -60,6 +60,8 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 		iResult = RunHashCheckDllVerb("HashSave_RunDLLW", argv[2]);
 	else if (argc == 3 && lstrcmpiW(argv[1], L"/hashcheck-verify") == 0)
 		iResult = RunHashCheckDllVerb("HashVerify_RunDLLW", argv[2]);
+	else if (argc == 3 && lstrcmpiW(argv[1], L"/hashcheck-options") == 0)
+		iResult = RunHashCheckDllVerb("ShowOptions_RunDLLW", argv[2]);
 
 	LocalFree(argv);
 	return(iResult);

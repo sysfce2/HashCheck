@@ -72,6 +72,36 @@ static HRESULT AllocCommandTitle( UINT uStringID, LPWSTR *ppszName )
 	return(SHStrDupW(szCleanTitle, ppszName));
 }
 
+static UINT GetCommandTitleStringID( HASHCHECK_EXPLORER_COMMAND command )
+{
+	switch (command)
+	{
+		case HCEC_VERIFY:
+			return(IDS_HV_MENUTEXT);
+
+		case HCEC_OPTIONS:
+			return(IDS_OPT_TITLE);
+
+		default:
+			return(IDS_HS_MENUTEXT);
+	}
+}
+
+static const GUID *GetCommandCanonicalName( HASHCHECK_EXPLORER_COMMAND command )
+{
+	switch (command)
+	{
+		case HCEC_VERIFY:
+			return(&CLSID_HashCheckExplorerVerify);
+
+		case HCEC_OPTIONS:
+			return(&CLSID_HashCheckExplorerOptions);
+
+		default:
+			return(&CLSID_HashCheckExplorerCreate);
+	}
+}
+
 static HRESULT GetShellItemPath( IShellItemArray *psia, DWORD iItem, PWSTR *ppszPath )
 {
 	*ppszPath = NULL;
@@ -449,7 +479,7 @@ STDMETHODIMP CHashCheckExplorerCommand::GetTitle( IShellItemArray *, LPWSTR *pps
 	if (!ppszName)
 		return(E_POINTER);
 
-	return(AllocCommandTitle(m_command == HCEC_VERIFY ? IDS_HV_MENUTEXT : IDS_HS_MENUTEXT, ppszName));
+	return(AllocCommandTitle(GetCommandTitleStringID(m_command), ppszName));
 }
 
 STDMETHODIMP CHashCheckExplorerCommand::GetIcon( IShellItemArray *, LPWSTR *ppszIcon )
@@ -473,7 +503,7 @@ STDMETHODIMP CHashCheckExplorerCommand::GetCanonicalName( GUID *pguidCommandName
 	if (!pguidCommandName)
 		return(E_POINTER);
 
-	*pguidCommandName = (m_command == HCEC_VERIFY) ? CLSID_HashCheckExplorerVerify : CLSID_HashCheckExplorerCreate;
+	*pguidCommandName = *GetCommandCanonicalName(m_command);
 	return(S_OK);
 }
 
@@ -515,6 +545,9 @@ STDMETHODIMP CHashCheckExplorerCommand::GetState( IShellItemArray *psia, BOOL fO
 
 STDMETHODIMP CHashCheckExplorerCommand::Invoke( IShellItemArray *psia, IBindCtx * )
 {
+	if (m_command == HCEC_OPTIONS)
+		return(LaunchPackageHost(L"/hashcheck-options", L""));
+
 	if (m_command == HCEC_VERIFY)
 	{
 		if (!HasSingleChecksumFileSelection(psia, TRUE))

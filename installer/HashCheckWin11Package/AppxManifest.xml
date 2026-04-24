@@ -7,7 +7,8 @@
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+  xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10"
+  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap virtualization">
   <Identity
     Name="IDRIX.HashCheck"
     Publisher="CN=IDRIX SARL, O=IDRIX SARL, STREET=5 AVENUE INGRES, L=Paris, S=Île-de-France, C=FR, OID.1.3.6.1.4.1.311.60.2.1.3=FR, SERIALNUMBER=490 000 619, OID.2.5.4.15=Private Organization"
@@ -18,6 +19,11 @@
     <PublisherDisplayName>IDRIX SARL</PublisherDisplayName>
     <Logo>Assets\storelogo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+    <virtualization:RegistryWriteVirtualization>
+      <virtualization:ExcludedKeys>
+        <virtualization:ExcludedKey>HKEY_CURRENT_USER\Software\HashCheck</virtualization:ExcludedKey>
+      </virtualization:ExcludedKeys>
+    </virtualization:RegistryWriteVirtualization>
   </Properties>
   <Resources>
     <Resource Language="en-us" />
@@ -38,10 +44,12 @@
             <desktop5:ItemType Type="*">
               <desktop5:Verb Id="HashCheckVerify" Clsid="D07A4F30-D6F6-4E0B-9361-E3039EDB15FF" />
               <desktop5:Verb Id="HashCheckCreate" Clsid="DB56D393-FC0E-4F46-9C82-EC601E6AB6AA" />
+              <desktop5:Verb Id="HashCheckOptions" Clsid="F92DBF1D-6398-405C-BCB5-1387088A9E7F" />
             </desktop5:ItemType>
             <desktop5:ItemType Type="Directory">
               <desktop5:Verb Id="HashCheckVerifyDirectory" Clsid="D07A4F30-D6F6-4E0B-9361-E3039EDB15FF" />
               <desktop5:Verb Id="HashCheckCreateDirectory" Clsid="DB56D393-FC0E-4F46-9C82-EC601E6AB6AA" />
+              <desktop5:Verb Id="HashCheckOptionsDirectory" Clsid="F92DBF1D-6398-405C-BCB5-1387088A9E7F" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
@@ -50,6 +58,7 @@
             <com:SurrogateServer DisplayName="HashCheck Shell Extension">
               <com:Class Id="DB56D393-FC0E-4F46-9C82-EC601E6AB6AA" Path="HashCheck.dll" ThreadingModel="STA" />
               <com:Class Id="D07A4F30-D6F6-4E0B-9361-E3039EDB15FF" Path="HashCheck.dll" ThreadingModel="STA" />
+              <com:Class Id="F92DBF1D-6398-405C-BCB5-1387088A9E7F" Path="HashCheck.dll" ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>
