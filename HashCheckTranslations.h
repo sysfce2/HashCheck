@@ -8,11 +8,13 @@
 #define IDS_HC_SAVE_ERROR               0x4105
 #define IDS_HC_OK                       0x4106
 #define IDS_HC_CANCEL                   0x4107
+#define IDS_HC_QUEUED                   0x4108
 
 #define IDS_HS_MENUTEXT                 0x4200
 #define IDS_HS_TITLE_FMT                0x4201
 #define IDS_HS_PAUSE                    IDS_HC_PAUSE
 #define IDS_HS_RESUME                   IDS_HC_RESUME
+#define IDS_HS_QUEUED                   IDS_HC_QUEUED
 #define IDS_HS_CANCEL                   IDS_HC_CANCEL
 
 #define IDS_HP_TITLE                    0x4300
@@ -25,6 +27,7 @@
 #define IDS_HP_FIND_NOTFOUND            0x4305
 #define IDS_HP_PAUSE                    IDS_HC_PAUSE
 #define IDS_HP_RESUME                   IDS_HC_RESUME
+#define IDS_HP_QUEUED                   IDS_HC_QUEUED
 #define IDS_HP_STOP                     IDS_HC_STOP
 #define IDS_HP_SAVE                     0x4306
 #define IDS_HP_OPTIONS                  0x4307
@@ -41,6 +44,7 @@
 #define IDS_HV_RESULTS_FMT              IDS_HC_RESULTS_FMT
 #define IDS_HV_PAUSE                    IDS_HC_PAUSE
 #define IDS_HV_RESUME                   IDS_HC_RESUME
+#define IDS_HV_QUEUED                   IDS_HC_QUEUED
 #define IDS_HV_STOP                     IDS_HC_STOP
 #define IDS_HV_EXIT                     0x4406
 #define IDS_HV_COL_FILENAME             0x4407

@@ -13,7 +13,7 @@ launch HashCheck checksum creation directly, without using Explorer's context
 menu:
 
 ```text
-"%ProgramFiles%\HashCheck\HashCheckPackageHost.exe" /create "C:\path\to\file-or-folder" ["C:\another\path" ...]
+"%ProgramFiles%\HashCheck\HashCheckPackageHost.exe" /create [/noqueue] "C:\path\to\file-or-folder" ["C:\another\path" ...]
 ```
 
 Paths supplied without a command are treated as `/create`, so dragging files or
@@ -25,7 +25,7 @@ output path. The hash is inferred from the output extension when possible and
 falls back to SHA-256 otherwise:
 
 ```text
-"%ProgramFiles%\HashCheck\HashCheckPackageHost.exe" /create /output "C:\path\checksums.sha256" "C:\path\to\folder"
+"%ProgramFiles%\HashCheck\HashCheckPackageHost.exe" /create /output "C:\path\checksums.sha256" [/noqueue] "C:\path\to\folder"
 ```
 
 The non-interactive mode also accepts `/hash`, `/encoding`, and `/eol`.
@@ -35,6 +35,13 @@ Supported hash names are `crc32`, `md5`, `sha1`, `sha256`, `sha512`,
 ```text
 "%ProgramFiles%\HashCheck\HashCheckPackageHost.exe" /create /output "C:\path\checksums.blake3" /hash blake3 /encoding utf8 /eol lf "C:\path\to\folder"
 ```
+
+Checksum creation, verification, and Properties tab hashing share one local
+HashCheck queue. Non-interactive `/create /output` calls wait for any earlier
+HashCheck job in the same logon session before hashing. Use `/noqueue` with
+`/create` or `/verify` to bypass this queue for that command-line invocation.
+Other concurrent HashCheck jobs will still serialize themselves; `/noqueue`
+only opts this invocation out.
 
 Under Wine, run the launcher from the HashCheck install directory and pass Wine
 paths, for example:

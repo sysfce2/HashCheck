@@ -89,6 +89,7 @@ UINT CALLBACK HashPropCallback( HWND hWnd, UINT uMsg, LPPROPSHEETPAGE ppsp )
 
 			if (phpctx)
 			{
+				ZeroMemory(phpctx, sizeof(HASHPROPCONTEXT));
 				phpctx->status = INACTIVE;
 				phpctx->hListRaw = hList;
 				return(1);
@@ -112,13 +113,17 @@ VOID __fastcall HashPropWorkerMain( PHASHPROPCONTEXT phpctx )
 
 	PHASHPROPITEM pItem;
     WHCTXEX whctx;
+    PBYTE pbBuffer = NULL;
+	HANDLE hJobSlot = WorkerThreadAcquireJobSlot((PCOMMONCONTEXT)phpctx);
+	if (!hJobSlot)
+		return;
 
 	// Prep: if not already done, expand directories, establish prefix, etc.
     if (! (phpctx->dwFlags & HPF_HLIST_PREPPED))
     {
         PostMessage(phpctx->hWnd, HM_WORKERTHREAD_TOGGLEPREP, (WPARAM)phpctx, TRUE);
         if (! HashCalcPrepare(phpctx))
-            return;
+            goto cleanup;
         phpctx->dwFlags |= HPF_HLIST_PREPPED;
     }
 	PostMessage(phpctx->hWnd, HM_WORKERTHREAD_TOGGLEPREP, (WPARAM)phpctx, FALSE);
@@ -129,9 +134,6 @@ VOID __fastcall HashPropWorkerMain( PHASHPROPCONTEXT phpctx )
 
 	phpctx->dwReadBufferSize = 0;
 	phpctx->bOuterMultithreaded = FALSE;
-
-    // Read buffer
-    PBYTE pbBuffer = NULL;
 
 #ifdef _TIMED
     DWORD dwStarted;
@@ -152,7 +154,7 @@ VOID __fastcall HashPropWorkerMain( PHASHPROPCONTEXT phpctx )
 		{
 			pbBuffer = (PBYTE)malloc(phpctx->dwReadBufferSize);
 			if (pbBuffer == NULL)
-				return;
+				goto cleanup;
 		}
 		// Get the hash
 		WorkerThreadHashFile(
@@ -179,7 +181,10 @@ VOID __fastcall HashPropWorkerMain( PHASHPROPCONTEXT phpctx )
 #ifdef _TIMED
     phpctx->dwElapsed = GetTickCount() - dwStarted;
 #endif
+
+cleanup:
     free(pbBuffer);
+	WorkerThreadReleaseJobSlot(hJobSlot);
 }
 
 
@@ -342,7 +347,7 @@ INT_PTR CALLBACK HashPropDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			// Vista: Workaround to fix their buggy progress bar
 			KillTimer(hWnd, TIMER_ID_PAUSE);
 			phpctx = (PHASHPROPCONTEXT)GetWindowLongPtr(hWnd, DWLP_USER);
-			if (phpctx->status == PAUSED)
+			if (phpctx->status == PAUSED || phpctx->status == QUEUED)
 				SetProgressBarPause((PCOMMONCONTEXT)phpctx, PBST_PAUSED);
 			return(TRUE);
 		}
@@ -376,6 +381,24 @@ INT_PTR CALLBACK HashPropDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		case HM_WORKERTHREAD_TOGGLEPREP:
 		{
 			HashCalcTogglePrep((PHASHPROPCONTEXT)wParam, (BOOL)lParam);
+			return(TRUE);
+		}
+
+		case HM_WORKERTHREAD_QUEUESTATE:
+		{
+			phpctx = (PHASHPROPCONTEXT)wParam;
+			if ((BOOL)lParam)
+			{
+				SetControlText(hWnd, IDC_PAUSE, IDS_HP_QUEUED);
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), FALSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phpctx, PBST_PAUSED);
+			}
+			else if (!(phpctx->dwFlags & HCF_EXIT_PENDING) && phpctx->status != CANCEL_REQUESTED)
+			{
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), TRUE);
+				SetControlText(hWnd, IDC_PAUSE, IDS_HP_PAUSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phpctx, PBST_NORMAL);
+			}
 			return(TRUE);
 		}
 	}

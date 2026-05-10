@@ -9,5 +9,8 @@ EXPORTS
 	DllInstall          PRIVATE
 	HashSave_RunDLLW    PRIVATE
 	HashSaveSilent_RunDLLW PRIVATE
+	HashSaveNoQueue_RunDLLW PRIVATE
+	HashSaveSilentNoQueue_RunDLLW PRIVATE
 	HashVerify_RunDLLW  PRIVATE
+	HashVerifyNoQueue_RunDLLW PRIVATE
 	ShowOptions_RunDLLW PRIVATE

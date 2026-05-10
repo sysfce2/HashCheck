@@ -20,7 +20,9 @@ HANDLE __fastcall CreateThreadCRT( PVOID pThreadProc, PVOID pvParam );
 // HashSave
 VOID WINAPI HashSaveStart( HWND hWndOwner, HSIMPLELIST hListInput );
 VOID CALLBACK HashSave_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
+VOID CALLBACK HashSaveNoQueue_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
 INT CALLBACK HashSaveSilent_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
+INT CALLBACK HashSaveSilentNoQueue_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
 
 // HashProp
 UINT CALLBACK HashPropCallback( HWND hWnd, UINT uMsg, LPPROPSHEETPAGE ppsp );
@@ -29,6 +31,7 @@ INT_PTR CALLBACK HashPropDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 // HashVerify
 DWORD WINAPI HashVerifyThread( PTSTR pszPath );
 VOID CALLBACK HashVerify_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
+VOID CALLBACK HashVerifyNoQueue_RunDLLW( HWND hWnd, HINSTANCE hInstance, PWSTR pszCmdLine, INT nCmdShow );
 
 // Activation context functions
 ULONG_PTR WINAPI ActivateManifest( BOOL bActivate );

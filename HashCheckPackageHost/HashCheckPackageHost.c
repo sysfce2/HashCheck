@@ -45,6 +45,7 @@ typedef struct {
 	INT iEol;
 	UINT cPaths;
 	BOOL bHasSilentOption;
+	BOOL bBypassQueue;
 } CREATEOPTIONS, *PCREATEOPTIONS;
 
 static VOID ZeroBytes( PVOID pvBuffer, size_t cbBuffer )
@@ -307,6 +308,12 @@ static BOOL IsEolOption( PCWSTR pszArg )
 	return(IsCommand(pszArg, L"eol"));
 }
 
+static BOOL IsNoQueueOption( PCWSTR pszArg )
+{
+	return(IsCommand(pszArg, L"noqueue") ||
+	       IsCommand(pszArg, L"no-queue"));
+}
+
 static BOOL HasSilentCreateOption( int argc, LPWSTR *argv, int iFirstArg )
 {
 	if (!argv)
@@ -444,14 +451,15 @@ static INT ShowUsage( )
 	MessageBoxW(
 		NULL,
 		L"Create a checksum file:\n"
-		L"  HashCheckPackageHost.exe /create <file-or-folder> [file-or-folder ...]\n\n"
+		L"  HashCheckPackageHost.exe /create [/noqueue] <file-or-folder> [file-or-folder ...]\n\n"
 		L"Create a checksum file without UI:\n"
-		L"  HashCheckPackageHost.exe /create /output <checksum-file> [/hash sha256] [/encoding utf8|utf16|ansi] [/eol crlf|lf] <file-or-folder> [...]\n\n"
+		L"  HashCheckPackageHost.exe /create /output <checksum-file> [/hash sha256] [/encoding utf8|utf16|ansi] [/eol crlf|lf] [/noqueue] <file-or-folder> [...]\n\n"
 		L"Verify a checksum file:\n"
-		L"  HashCheckPackageHost.exe /verify <checksum-file>\n\n"
+		L"  HashCheckPackageHost.exe /verify [/noqueue] <checksum-file>\n\n"
 		L"Show HashCheck options:\n"
 		L"  HashCheckPackageHost.exe /options\n\n"
-		L"When paths are supplied without a command, /create is assumed.",
+		L"When paths are supplied without a command, /create is assumed.\n"
+		L"Hash jobs are queued locally; /noqueue bypasses the queue for one command-line run.",
 		L"HashCheck",
 		MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND
 	);
@@ -555,6 +563,10 @@ static HRESULT ParseCreateOptions( int argc, LPWSTR *argv, int iFirstArg, PCREAT
 
 			pOptions->bHasSilentOption = TRUE;
 		}
+		else if (IsNoQueueOption(argv[iArg]))
+		{
+			pOptions->bBypassQueue = TRUE;
+		}
 		else if (*argv[iArg])
 		{
 			++pOptions->cPaths;
@@ -612,6 +624,9 @@ static HRESULT WritePathListFileFromArgs( int argc, LPWSTR *argv, int iFirstPath
 
 	for (int iArg = iFirstPath; SUCCEEDED(hr) && iArg < argc; ++iArg)
 	{
+		if (IsNoQueueOption(argv[iArg]))
+			continue;
+
 		size_t cchPath = 0;
 		hr = StringLength(argv[iArg], cchMaxWritableString, &cchPath);
 		if (SUCCEEDED(hr))
@@ -723,6 +738,9 @@ static HRESULT WriteSaveSpecFileFromArgs( int argc, LPWSTR *argv, int iFirstArg,
 			continue;
 		}
 
+		if (IsNoQueueOption(argv[iArg]))
+			continue;
+
 		if (*argv[iArg])
 			hr = WriteWideString(hFile, argv[iArg]);
 	}
@@ -805,14 +823,14 @@ static HASHCHECK_NOCF INT RunHashCheckDllVerbResult( PCSTR pszExportName, PWSTR 
 	return(iResult);
 }
 
-static INT RunCreateFromPaths( int argc, LPWSTR *argv, int iFirstPath )
+static INT RunCreateFromPaths( int argc, LPWSTR *argv, int iFirstPath, BOOL bBypassQueue )
 {
 	WCHAR szListPath[MAX_PATH + 1];
 	HRESULT hr = WritePathListFileFromArgs(argc, argv, iFirstPath, szListPath, ARRAYSIZE(szListPath));
 	if (FAILED(hr))
 		return(hr == E_INVALIDARG ? ShowUsage() : ShowError(L"Preparing the checksum input list", hr));
 
-	INT iResult = RunHashCheckDllVerb("HashSave_RunDLLW", szListPath);
+	INT iResult = RunHashCheckDllVerb(bBypassQueue ? "HashSaveNoQueue_RunDLLW" : "HashSave_RunDLLW", szListPath);
 	if (iResult)
 		DeleteFileW(szListPath);
 
@@ -826,7 +844,10 @@ static INT RunCreateSilent( int argc, LPWSTR *argv, int iFirstArg, const CREATEO
 	if (FAILED(hr))
 		return(ReportErrorToStandardError(L"preparing checksum creation failed", hr));
 
-	INT iResult = RunHashCheckDllVerbResult("HashSaveSilent_RunDLLW", szSpecPath);
+	INT iResult = RunHashCheckDllVerbResult(
+		pOptions->bBypassQueue ? "HashSaveSilentNoQueue_RunDLLW" : "HashSaveSilent_RunDLLW",
+		szSpecPath
+	);
 	if (iResult)
 	{
 		DeleteFileW(szSpecPath);
@@ -851,7 +872,33 @@ static INT RunCreateCommand( int argc, LPWSTR *argv, int iFirstArg )
 	if (options.bHasSilentOption)
 		return(RunCreateSilent(argc, argv, iFirstArg, &options));
 
-	return(RunCreateFromPaths(argc, argv, iFirstArg));
+	return(RunCreateFromPaths(argc, argv, iFirstArg, options.bBypassQueue));
+}
+
+static INT RunVerifyCommand( int argc, LPWSTR *argv, int iFirstArg )
+{
+	BOOL bBypassQueue = FALSE;
+	PWSTR pszPath = NULL;
+
+	for (int iArg = iFirstArg; iArg < argc; ++iArg)
+	{
+		if (IsNoQueueOption(argv[iArg]))
+		{
+			bBypassQueue = TRUE;
+		}
+		else if (*argv[iArg] && !pszPath)
+		{
+			pszPath = argv[iArg];
+		}
+		else if (*argv[iArg])
+		{
+			return(ShowUsage());
+		}
+	}
+
+	return(pszPath ?
+	       RunHashCheckDllVerb(bBypassQueue ? "HashVerifyNoQueue_RunDLLW" : "HashVerify_RunDLLW", pszPath) :
+	       ShowUsage());
 }
 
 static INT HashCheckPackageHostMain( )
@@ -885,7 +932,7 @@ static INT HashCheckPackageHostMain( )
 	}
 	else if (IsCommand(argv[1], L"verify"))
 	{
-		iResult = (argc == 3) ? RunHashCheckDllVerb("HashVerify_RunDLLW", argv[2]) : ShowUsage();
+		iResult = RunVerifyCommand(argc, argv, 2);
 	}
 	else if (IsCommand(argv[1], L"options"))
 	{

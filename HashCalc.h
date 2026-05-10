@@ -66,6 +66,7 @@ typedef struct {
 	HWND               hWndPBFile;   // cache of the IDC_PROG_FILE progress bar handle
 	HANDLE             hThread;      // handle of the worker thread
 	HANDLE             hUnpauseEvent;// handle of the event which signals when unpaused
+	HANDLE             hCancelEvent; // handle of the event which signals cancellation
 	PFNWORKERMAIN      pfnWorkerMain;// worker function executed by the (non-GUI) thread
 	DWORD              dwReadBufferSize; // size of the read buffer, in bytes
 	BOOL               bOuterMultithreaded; // TRUE when files are already hashed in parallel

@@ -45,6 +45,7 @@ typedef struct {
 	UINT uHashIndex;
 	INT iSaveEncoding;
 	INT iSaveEol;
+	BOOL bBypassQueue;
 } HASHSAVESILENTSPEC, *PHASHSAVESILENTSPEC;
 
 
@@ -54,6 +55,8 @@ typedef struct {
 \*============================================================================*/
 
 // Entry points / main functions
+VOID CALLBACK HashSaveRunDllEx( HWND hWnd, PWSTR pszCmdLine, BOOL bBypassQueue );
+INT CALLBACK HashSaveSilentRunDllEx( HWND hWnd, PWSTR pszCmdLine, BOOL bBypassQueue );
 DWORD WINAPI HashSaveThread( PHASHSAVECONTEXT phsctx );
 HSIMPLELIST WINAPI HashSaveLoadPathListFile( PWSTR pszPathListFile );
 HRESULT WINAPI HashSaveLoadSilentSpecFile( PWSTR pszSpecFile, PHASHSAVESILENTSPEC pSpec );
@@ -78,10 +81,22 @@ VOID WINAPI HashSaveDlgInit( PHASHSAVECONTEXT phsctx );
 
 VOID CALLBACK HashSave_RunDLLW( HWND hWnd, HINSTANCE, PWSTR pszCmdLine, INT )
 {
+	HashSaveRunDllEx(hWnd, pszCmdLine, FALSE);
+}
+
+VOID CALLBACK HashSaveNoQueue_RunDLLW( HWND hWnd, HINSTANCE, PWSTR pszCmdLine, INT )
+{
+	HashSaveRunDllEx(hWnd, pszCmdLine, TRUE);
+}
+
+VOID CALLBACK HashSaveRunDllEx( HWND hWnd, PWSTR pszCmdLine, BOOL bBypassQueue )
+{
 	HSIMPLELIST hListRaw = HashSaveLoadPathListFile(pszCmdLine);
 	if (hListRaw)
 	{
 		PHASHSAVECONTEXT phsctx = HashSaveCreateContext(hWnd, hListRaw);
+		if (phsctx && bBypassQueue)
+			phsctx->dwFlags |= HCF_BYPASS_QUEUE;
 		if (phsctx)
 			HashSaveThread(phsctx);
 
@@ -91,10 +106,22 @@ VOID CALLBACK HashSave_RunDLLW( HWND hWnd, HINSTANCE, PWSTR pszCmdLine, INT )
 
 INT CALLBACK HashSaveSilent_RunDLLW( HWND hWnd, HINSTANCE, PWSTR pszCmdLine, INT )
 {
+	return(HashSaveSilentRunDllEx(hWnd, pszCmdLine, FALSE));
+}
+
+INT CALLBACK HashSaveSilentNoQueue_RunDLLW( HWND hWnd, HINSTANCE, PWSTR pszCmdLine, INT )
+{
+	return(HashSaveSilentRunDllEx(hWnd, pszCmdLine, TRUE));
+}
+
+INT CALLBACK HashSaveSilentRunDllEx( HWND hWnd, PWSTR pszCmdLine, BOOL bBypassQueue )
+{
 	HASHSAVESILENTSPEC spec;
 	ZeroMemory(&spec, sizeof(spec));
 
 	HRESULT hr = HashSaveLoadSilentSpecFile(pszCmdLine, &spec);
+	if (SUCCEEDED(hr))
+		spec.bBypassQueue = bBypassQueue;
 	if (SUCCEEDED(hr))
 		hr = HashSaveRunSilent(hWnd, &spec);
 
@@ -429,6 +456,9 @@ HRESULT WINAPI HashSaveRunSilent( HWND hWndOwner, PHASHSAVESILENTSPEC pSpec )
 	}
 
 	phsctx->dwFlags |= HSF_HEADLESS;
+	if (pSpec->bBypassQueue)
+		phsctx->dwFlags |= HCF_BYPASS_QUEUE;
+	phsctx->hWnd = NULL;
 	phsctx->status = ACTIVE;
 	phsctx->hList = NULL;
 	HashCalcPrepare(phsctx);
@@ -449,7 +479,9 @@ HRESULT WINAPI HashSaveRunSilent( HWND hWndOwner, PHASHSAVESILENTSPEC pSpec )
 	else
 	{
 		HashSaveWorkerMain(phsctx);
-		if (phsctx->dwFlags & HSF_WORKER_FAILED)
+		if (phsctx->status == CANCEL_REQUESTED)
+			hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
+		else if (phsctx->dwFlags & HSF_WORKER_FAILED)
 			hr = HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY);
 
 		SLRelease(phsctx->hList);
@@ -544,6 +576,12 @@ VOID __fastcall HashSaveWorkerMain( PHASHSAVECONTEXT phsctx )
 	// Note that ALL message communication to and from the main window MUST
 	// be asynchronous, or else there may be a deadlock.
 	const bool bHeadless = (phsctx->dwFlags & HSF_HEADLESS) != 0;
+
+	HANDLE hJobSlot = WorkerThreadAcquireJobSlot((PCOMMONCONTEXT)phsctx);
+	if (!hJobSlot)
+		return;
+
+	JobSlotGuard jobSlotGuard(hJobSlot);
 
 	// Prep: expand directories, max path, etc. (prefix was set by earlier call)
 	if (!bHeadless)
@@ -775,12 +813,43 @@ INT_PTR CALLBACK HashSaveDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				WorkerThreadCleanup((PCOMMONCONTEXT)phsctx);
                 BOOL bDeleted = HashCalcDeleteFileByHandle(phsctx->hFileOut);
 				EndDialog(hWnd, bDeleted);
+				return(TRUE);
 			}
-            if (WaitForSingleObject(phsctx->hThread, 1000) != WAIT_TIMEOUT)
-            {
-                WorkerThreadCleanup((PCOMMONCONTEXT)phsctx);
-                EndDialog(hWnd, TRUE);
-            }
+
+			{
+				const DWORD dwFastDismissTimeout = 1000;
+				DWORD dwStarted = GetTickCount();
+
+				// Preserve the old auto-dismiss polish for fast save jobs, but
+				// stop waiting as soon as this worker reports that it is queued.
+				for (;;)
+				{
+					DWORD dwElapsed = GetTickCount() - dwStarted;
+					DWORD dwWait;
+
+					if (dwElapsed >= dwFastDismissTimeout)
+						break;
+
+					dwWait = WaitForSingleObject(
+						phsctx->hThread,
+						(dwFastDismissTimeout - dwElapsed > 50) ? 50 : dwFastDismissTimeout - dwElapsed
+					);
+
+					if (dwWait == WAIT_OBJECT_0)
+					{
+						WorkerThreadCleanup((PCOMMONCONTEXT)phsctx);
+						EndDialog(hWnd, TRUE);
+						break;
+					}
+
+					if (dwWait != WAIT_TIMEOUT ||
+					    (!(phsctx->dwFlags & HCF_BYPASS_QUEUE) &&
+					     InterlockedCompareExchange(&phsctx->status, 0, 0) == QUEUED))
+					{
+						break;
+					}
+				}
+			}
 
 			return(TRUE);
 		}
@@ -837,7 +906,7 @@ INT_PTR CALLBACK HashSaveDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			// Vista: Workaround to fix their buggy progress bar
 			KillTimer(hWnd, TIMER_ID_PAUSE);
 			phsctx = (PHASHSAVECONTEXT)GetWindowLongPtr(hWnd, DWLP_USER);
-			if (phsctx->status == PAUSED)
+			if (phsctx->status == PAUSED || phsctx->status == QUEUED)
 				SetProgressBarPause((PCOMMONCONTEXT)phsctx, PBST_PAUSED);
 			return(TRUE);
 		}
@@ -861,6 +930,24 @@ INT_PTR CALLBACK HashSaveDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		case HM_WORKERTHREAD_TOGGLEPREP:
 		{
 			HashCalcTogglePrep((PHASHSAVECONTEXT)wParam, (BOOL)lParam);
+			return(TRUE);
+		}
+
+		case HM_WORKERTHREAD_QUEUESTATE:
+		{
+			phsctx = (PHASHSAVECONTEXT)wParam;
+			if ((BOOL)lParam)
+			{
+				SetControlText(hWnd, IDC_PAUSE, IDS_HS_QUEUED);
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), FALSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phsctx, PBST_PAUSED);
+			}
+			else if (!(phsctx->dwFlags & HCF_EXIT_PENDING) && phsctx->status != CANCEL_REQUESTED)
+			{
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), TRUE);
+				SetControlText(hWnd, IDC_PAUSE, IDS_HS_PAUSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phsctx, PBST_NORMAL);
+			}
 			return(TRUE);
 		}
 	}
@@ -902,7 +989,8 @@ VOID WINAPI HashSaveDlgInit( PHASHSAVECONTEXT phsctx )
 
 	// Initialize miscellaneous stuff
 	{
-		phsctx->dwFlags = 0;
+		DWORD dwQueueFlags = phsctx->dwFlags & HCF_BYPASS_QUEUE;
+		phsctx->dwFlags = dwQueueFlags;
 		phsctx->cTotal = 0;
         phsctx->hThread = NULL;
         phsctx->hUnpauseEvent = NULL;

@@ -15,6 +15,7 @@
 extern "C" {
 #endif
 
+#include "libs/WinIntrinsics.h"
 #include <windows.h>
 #include "HashCheckUI.h"
 #include "libs/WinHash.h"
@@ -45,6 +46,7 @@ extern "C" {
 #define HCF_EXIT_PENDING      0x0001UL
 #define HCF_MARQUEE           0x0002UL
 #define HCF_RESTARTING        0x0004UL
+#define HCF_BYPASS_QUEUE      0x04000000UL
 #define HVF_HAS_SET_TYPE      0x0008UL
 #define HVF_ITEM_HILITE       0x0010UL
 #define HPF_HAS_RESIZED       0x0008UL
@@ -56,19 +58,22 @@ extern "C" {
 #define HM_WORKERTHREAD_UPDATE      (WM_APP + 1)  // wParam = ctx, lParam = data
 #define HM_WORKERTHREAD_SETSIZE     (WM_APP + 2)  // wParam = ctx, lParam = filesize
 #define HM_WORKERTHREAD_TOGGLEPREP  (WM_APP + 3)  // wParam = ctx, lParam = state
+#define HM_WORKERTHREAD_QUEUESTATE  (WM_APP + 4)  // wParam = ctx, lParam = queued?
 
 // Some convenient typedefs for worker thread control
 typedef volatile UINT MSGCOUNT, *PMSGCOUNT;
 typedef VOID (__fastcall *PFNWORKERMAIN)( PVOID );
 
 // Worker thread status
-typedef volatile enum {
+typedef enum {
 	INACTIVE,
 	ACTIVE,
+	QUEUED,
 	PAUSED,
 	CANCEL_REQUESTED,
 	CLEANUP_COMPLETED
-} WORKERTHREADSTATUS, *PWORKERTHREADSTATUS;
+} WORKERTHREADSTATUSVALUE;
+typedef VLONG WORKERTHREADSTATUS, *PWORKERTHREADSTATUS;
 
 // Worker thread context; all other contexts must start with this
 typedef struct {
@@ -81,6 +86,7 @@ typedef struct {
 	HWND               hWndPBFile;   // cache of the IDC_PROG_FILE progress bar handle
 	HANDLE             hThread;      // handle of the worker thread
 	HANDLE             hUnpauseEvent;// handle of the event which signals when unpaused
+	HANDLE             hCancelEvent; // handle of the event which signals cancellation
 	PFNWORKERMAIN      pfnWorkerMain;// worker function executed by the (non-GUI) thread
 	DWORD              dwReadBufferSize; // size of the read buffer, in bytes
 	BOOL               bOuterMultithreaded; // TRUE when files are already hashed in parallel
@@ -115,6 +121,10 @@ VOID WINAPI SetProgressBarPause( PCOMMONCONTEXT pcmnctx, WPARAM iState );
 VOID WINAPI WorkerThreadTogglePause( PCOMMONCONTEXT pcmnctx );
 VOID WINAPI WorkerThreadStop( PCOMMONCONTEXT pcmnctx );
 VOID WINAPI WorkerThreadCleanup( PCOMMONCONTEXT pcmnctx );
+// Returns NULL if canceled, INVALID_HANDLE_VALUE if this worker should run
+// unqueued, or a real queue slot handle to release with WorkerThreadReleaseJobSlot.
+HANDLE WINAPI WorkerThreadAcquireJobSlot( PCOMMONCONTEXT pcmnctx );
+VOID WINAPI WorkerThreadReleaseJobSlot( HANDLE hJobSlot );
 
 // Worker thread functions
 DWORD WINAPI WorkerThreadStartup( PCOMMONCONTEXT pcmnctx );
@@ -133,6 +143,18 @@ VOID __fastcall HostRelease( ULONG_PTR uCookie );
 
 #ifdef __cplusplus
 }
+
+class JobSlotGuard {
+public:
+	explicit JobSlotGuard(HANDLE hSlot) : hJobSlot(hSlot) {}
+	~JobSlotGuard() { WorkerThreadReleaseJobSlot(hJobSlot); }
+
+private:
+	JobSlotGuard(const JobSlotGuard&);
+	JobSlotGuard& operator=(const JobSlotGuard&);
+
+	HANDLE hJobSlot;
+};
 #endif
 
 #endif

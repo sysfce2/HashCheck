@@ -92,6 +92,7 @@ typedef struct {
 	HWND               hWndPBFile;   // cache of the IDC_PROG_FILE progress bar handle
 	HANDLE             hThread;      // handle of the worker thread
 	HANDLE             hUnpauseEvent;// handle of the event which signals when unpaused
+	HANDLE             hCancelEvent; // handle of the event which signals cancellation
 	PFNWORKERMAIN      pfnWorkerMain;// worker function executed by the (non-GUI) thread
 	DWORD              dwReadBufferSize; // size of the read buffer, in bytes
 	BOOL               bOuterMultithreaded; // TRUE when files are already hashed in parallel
@@ -126,6 +127,9 @@ VOID WINAPI HashVerifyParseData( PHASHVERIFYCONTEXT phvctx );
 BOOL WINAPI ValidateHexSequence( PTSTR psz, UINT cch );
 
 // Worker thread
+VOID CALLBACK HashVerifyRunDLLEx( HWND hWnd, HINSTANCE hInstance,
+                                  PWSTR pszCmdLine, INT nCmdShow, BOOL bBypassQueue );
+DWORD WINAPI HashVerifyThreadEx( PTSTR pszPath, BOOL bBypassQueue );
 VOID __fastcall HashVerifyWorkerMain( PHASHVERIFYCONTEXT phvctx );
 
 // Dialog general
@@ -153,6 +157,18 @@ INT __cdecl HashVerifySortCompare( PHASHVERIFYCONTEXT phvctx, PPCHVITEM ppItemA,
 VOID CALLBACK HashVerify_RunDLLW( HWND hWnd, HINSTANCE hInstance,
                                   PWSTR pszCmdLine, INT nCmdShow )
 {
+	HashVerifyRunDLLEx(hWnd, hInstance, pszCmdLine, nCmdShow, FALSE);
+}
+
+VOID CALLBACK HashVerifyNoQueue_RunDLLW( HWND hWnd, HINSTANCE hInstance,
+                                         PWSTR pszCmdLine, INT nCmdShow )
+{
+	HashVerifyRunDLLEx(hWnd, hInstance, pszCmdLine, nCmdShow, TRUE);
+}
+
+VOID CALLBACK HashVerifyRunDLLEx( HWND hWnd, HINSTANCE hInstance,
+                                  PWSTR pszCmdLine, INT nCmdShow, BOOL bBypassQueue )
+{
 	SIZE_T cchPath = SSLenW(pszCmdLine) + 1;
 	PTSTR pszPath;
 
@@ -165,7 +181,7 @@ VOID CALLBACK HashVerify_RunDLLW( HWND hWnd, HINSTANCE hInstance,
 		if (WStrToTStr(pszCmdLine, pszPath, (UINT)cchPath))
 		{
 			InterlockedIncrement(&g_cRefThisDll);
-			HashVerifyThread(pszPath);
+			HashVerifyThreadEx(pszPath, bBypassQueue);
 		}
 		else
 		{
@@ -175,6 +191,11 @@ VOID CALLBACK HashVerify_RunDLLW( HWND hWnd, HINSTANCE hInstance,
 }
 
 DWORD WINAPI HashVerifyThread( PTSTR pszPath )
+{
+	return(HashVerifyThreadEx(pszPath, FALSE));
+}
+
+DWORD WINAPI HashVerifyThreadEx( PTSTR pszPath, BOOL bBypassQueue )
 {
 	HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 	BOOL bCoUninitialize = SUCCEEDED(hrCoInit);
@@ -197,6 +218,8 @@ DWORD WINAPI HashVerifyThread( PTSTR pszPath )
 	HCNormalizeString(pszPath);
 	StrTrim(pszPath, TEXT(" "));
 	hvctx.pszPath = pszPath;
+	if (bBypassQueue)
+		hvctx.dwFlags |= HCF_BYPASS_QUEUE;
 	hvctx.dwReadBufferSize = GetReadBufferSizeForPath(pszPath);
 	hvctx.bOuterMultithreaded = FALSE;
 
@@ -537,6 +560,12 @@ VOID __fastcall HashVerifyWorkerMain( PHASHVERIFYCONTEXT phvctx )
 	// Note that ALL message communication to and from the main window MUST
 	// be asynchronous, or else there may be a deadlock
 
+	HANDLE hJobSlot = WorkerThreadAcquireJobSlot((PCOMMONCONTEXT)phvctx);
+	if (!hJobSlot)
+		return;
+
+	JobSlotGuard jobSlotGuard(hJobSlot);
+
 	// Initialize the path prefix length; used for building the full path
 	PTSTR pszPathTail = StrRChr(phvctx->pszPath, NULL, TEXT('\\'));
 	SIZE_T cchPathPrefix = (pszPathTail) ? pszPathTail + 1 - phvctx->pszPath : 0;
@@ -860,7 +889,7 @@ INT_PTR CALLBACK HashVerifyDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			// Vista: Workaround to fix their buggy progress bar
 			KillTimer(hWnd, TIMER_ID_PAUSE);
 			phvctx = (PHASHVERIFYCONTEXT)GetWindowLongPtr(hWnd, DWLP_USER);
-			if (phvctx->status == PAUSED)
+			if (phvctx->status == PAUSED || phvctx->status == QUEUED)
 				SetProgressBarPause((PCOMMONCONTEXT)phvctx, PBST_PAUSED);
 			return(TRUE);
 		}
@@ -886,6 +915,24 @@ INT_PTR CALLBACK HashVerifyDlgProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			assert(lParam >= 0 && (UINT)lParam < phvctx->cTotal);
 			if (phvctx->index[lParam]->bBeenSeen)
 				ListView_RedrawItems(phvctx->hWndList, lParam, lParam);
+			return(TRUE);
+		}
+
+		case HM_WORKERTHREAD_QUEUESTATE:
+		{
+			phvctx = (PHASHVERIFYCONTEXT)wParam;
+			if ((BOOL)lParam)
+			{
+				SetControlText(hWnd, IDC_PAUSE, IDS_HV_QUEUED);
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), FALSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phvctx, PBST_PAUSED);
+			}
+			else if (!(phvctx->dwFlags & HCF_EXIT_PENDING) && phvctx->status != CANCEL_REQUESTED)
+			{
+				EnableWindow(GetDlgItem(hWnd, IDC_PAUSE), TRUE);
+				SetControlText(hWnd, IDC_PAUSE, IDS_HV_PAUSE);
+				SetProgressBarPause((PCOMMONCONTEXT)phvctx, PBST_NORMAL);
+			}
 			return(TRUE);
 		}
 	}

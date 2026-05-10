@@ -17,6 +17,89 @@
 
 #define PROGRESS_BAR_STEPS 300
 #define BLAKE3_TBB_MIN_FILE_SIZE (512ULL * 1024ULL)
+#define JOB_QUEUE_WAIT_INTERVAL_MS 200
+#define JOB_QUEUE_LOCK_TIMEOUT_MS 30000
+#define JOB_QUEUE_FULL_RETRY_LIMIT 50
+#define JOB_QUEUE_CAPACITY 16384
+#define JOB_QUEUE_MAGIC 0x314A5148UL
+#define JOB_QUEUE_VERSION 3
+
+static const TCHAR HASHCHECK_JOB_QUEUE_MUTEX_NAME[] = TEXT("Local\\HashCheck.JobQueue.Mutex.v3");
+static const TCHAR HASHCHECK_JOB_QUEUE_EVENT_NAME[] = TEXT("Local\\HashCheck.JobQueue.Event.v3");
+static const TCHAR HASHCHECK_JOB_QUEUE_MAP_NAME[] = TEXT("Local\\HashCheck.JobQueue.State.v3");
+
+// The named mutex protects only this short shared-memory update path. FIFO
+// ordering comes from the explicit ticket queue, not from mutex wake ordering.
+typedef struct {
+	ULONGLONG ullJobId;
+	DWORD dwProcessId;
+	ULONGLONG ullProcessCreationTime;
+} HASHCHECK_JOB_QUEUE_ENTRY, *PHASHCHECK_JOB_QUEUE_ENTRY;
+
+typedef struct {
+	DWORD dwMagic;
+	DWORD dwVersion;
+	DWORD cCapacity;
+	DWORD iHead;
+	DWORD cEntries;
+	ULONGLONG ullNextJobId;
+	HASHCHECK_JOB_QUEUE_ENTRY rgEntries[JOB_QUEUE_CAPACITY];
+} HASHCHECK_JOB_QUEUE_STATE, *PHASHCHECK_JOB_QUEUE_STATE;
+
+C_ASSERT(sizeof(HASHCHECK_JOB_QUEUE_ENTRY) == 24);
+C_ASSERT(FIELD_OFFSET(HASHCHECK_JOB_QUEUE_STATE, rgEntries) == 32);
+
+typedef struct {
+	HANDLE hQueueMutex;
+	HANDLE hQueueEvent;
+	HANDLE hMap;
+	PHASHCHECK_JOB_QUEUE_STATE pState;
+	ULONGLONG ullJobId;
+	DWORD dwProcessId;
+	ULONGLONG ullProcessCreationTime;
+	BOOL bEnqueued;
+} HASHCHECK_JOB_SLOT, *PHASHCHECK_JOB_SLOT;
+
+static LONG WINAPI WorkerThreadGetStatus( PCOMMONCONTEXT pcmnctx )
+{
+	return(InterlockedCompareExchange(&pcmnctx->status, 0, 0));
+}
+
+static BOOL WINAPI WorkerThreadSetStatusIf( PCOMMONCONTEXT pcmnctx, LONG lStatus, LONG lExpectedStatus )
+{
+	return(InterlockedCompareExchange(&pcmnctx->status, lStatus, lExpectedStatus) == lExpectedStatus);
+}
+
+static VOID WINAPI WorkerThreadSetStatus( PCOMMONCONTEXT pcmnctx, LONG lStatus )
+{
+	InterlockedExchange(&pcmnctx->status, lStatus);
+}
+
+static BOOL WINAPI WorkerThreadSetStatusUnlessCanceled( PCOMMONCONTEXT pcmnctx, LONG lStatus )
+{
+	for (;;)
+	{
+		LONG lPrevStatus = WorkerThreadGetStatus(pcmnctx);
+
+		if (lPrevStatus == CANCEL_REQUESTED ||
+		    lPrevStatus == INACTIVE ||
+		    lPrevStatus == CLEANUP_COMPLETED)
+		{
+			return(lPrevStatus == lStatus);
+		}
+
+		if (lPrevStatus == lStatus ||
+		    WorkerThreadSetStatusIf(pcmnctx, lStatus, lPrevStatus))
+		{
+			return(TRUE);
+		}
+	}
+}
+
+static BOOL WINAPI WorkerThreadIsCancelRequested( PCOMMONCONTEXT pcmnctx )
+{
+	return(WorkerThreadGetStatus(pcmnctx) == CANCEL_REQUESTED);
+}
 
 static PTSTR WINAPI AllocLongPath( PCTSTR pszPath )
 {
@@ -62,13 +145,19 @@ HANDLE __fastcall CreateThreadCRT( PVOID pThreadProc, PVOID pvParam )
 		// and there is some initialization that we need to take care of...
 
 		PCOMMONCONTEXT pcmnctx = pvParam;
-		pcmnctx->status = ACTIVE;
+		WorkerThreadSetStatus(pcmnctx, ACTIVE);
 		pcmnctx->cSentMsgs = 0;
 		pcmnctx->cHandledMsgs = 0;
 		pcmnctx->hWndPBTotal = GetDlgItem(pcmnctx->hWnd, IDC_PROG_TOTAL);
 		pcmnctx->hWndPBFile = GetDlgItem(pcmnctx->hWnd, IDC_PROG_FILE);
         if (pcmnctx->hUnpauseEvent == NULL)
             pcmnctx->hUnpauseEvent = CreateEvent(NULL, TRUE, TRUE, NULL);
+        else
+            SetEvent(pcmnctx->hUnpauseEvent);
+        if (pcmnctx->hCancelEvent == NULL)
+            pcmnctx->hCancelEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+        else
+            ResetEvent(pcmnctx->hCancelEvent);
 		SendMessage(pcmnctx->hWndPBFile, PBM_SETRANGE, 0, MAKELPARAM(0, PROGRESS_BAR_STEPS));
 
 		pThreadProc = WorkerThreadStartup;
@@ -312,10 +401,14 @@ VOID WINAPI SetProgressBarPause( PCOMMONCONTEXT pcmnctx, WPARAM iState )
 
 VOID WINAPI WorkerThreadTogglePause( PCOMMONCONTEXT pcmnctx )
 {
-	if (pcmnctx->status == ACTIVE)
+	if (WorkerThreadGetStatus(pcmnctx) == ACTIVE)
 	{
         ResetEvent(pcmnctx->hUnpauseEvent);
-		pcmnctx->status = PAUSED;
+		if (!WorkerThreadSetStatusIf(pcmnctx, PAUSED, ACTIVE))
+		{
+			SetEvent(pcmnctx->hUnpauseEvent);
+			return;
+		}
 
 		if (!(pcmnctx->dwFlags & HCF_EXIT_PENDING))
 		{
@@ -323,10 +416,8 @@ VOID WINAPI WorkerThreadTogglePause( PCOMMONCONTEXT pcmnctx )
 			SetProgressBarPause(pcmnctx, PBST_PAUSED);
 		}
 	}
-	else if (pcmnctx->status == PAUSED)
+	else if (WorkerThreadSetStatusIf(pcmnctx, ACTIVE, PAUSED))
 	{
-		pcmnctx->status = ACTIVE;
-
 		if (!(pcmnctx->dwFlags & HCF_EXIT_PENDING))
 		{
 			SetControlText(pcmnctx->hWnd, IDC_PAUSE, IDS_HC_PAUSE);
@@ -337,23 +428,479 @@ VOID WINAPI WorkerThreadTogglePause( PCOMMONCONTEXT pcmnctx )
 	}
 }
 
-VOID WINAPI WorkerThreadStop( PCOMMONCONTEXT pcmnctx )
+static VOID WINAPI JobQueueInitializeState( PHASHCHECK_JOB_QUEUE_STATE pState )
 {
-	if (pcmnctx->status == INACTIVE || pcmnctx->status == CLEANUP_COMPLETED)
+	ZeroMemory(pState, sizeof(*pState));
+	pState->dwMagic = JOB_QUEUE_MAGIC;
+	pState->dwVersion = JOB_QUEUE_VERSION;
+	pState->cCapacity = JOB_QUEUE_CAPACITY;
+	pState->ullNextJobId = 1;
+}
+
+static BOOL WINAPI JobQueueStateIsValid( PHASHCHECK_JOB_QUEUE_STATE pState )
+{
+	DWORD i;
+
+	if (!pState)
+		return(FALSE);
+
+	if (pState->dwMagic != JOB_QUEUE_MAGIC ||
+	    pState->dwVersion != JOB_QUEUE_VERSION ||
+	    pState->cCapacity != JOB_QUEUE_CAPACITY ||
+	    pState->iHead >= JOB_QUEUE_CAPACITY ||
+	    pState->cEntries > JOB_QUEUE_CAPACITY ||
+	    !pState->ullNextJobId)
+	{
+		return(FALSE);
+	}
+
+	for (i = 0; i < pState->cEntries; ++i)
+	{
+		DWORD iEntry = (pState->iHead + i) % JOB_QUEUE_CAPACITY;
+		if (!pState->rgEntries[iEntry].ullJobId ||
+		    !pState->rgEntries[iEntry].dwProcessId ||
+		    !pState->rgEntries[iEntry].ullProcessCreationTime)
+		{
+			return(FALSE);
+		}
+	}
+
+	return(TRUE);
+}
+
+static VOID WINAPI JobQueueValidateState( PHASHCHECK_JOB_QUEUE_STATE pState )
+{
+	if (!JobQueueStateIsValid(pState))
+		JobQueueInitializeState(pState);
+}
+
+static BOOL WINAPI JobQueueLock( HANDLE hQueueMutex )
+{
+	DWORD dwWait = WaitForSingleObject(hQueueMutex, JOB_QUEUE_LOCK_TIMEOUT_MS);
+	return(dwWait == WAIT_OBJECT_0 || dwWait == WAIT_ABANDONED);
+}
+
+static VOID WINAPI JobQueueSignalWaiters( VOID )
+{
+	HANDLE hQueueEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, HASHCHECK_JOB_QUEUE_EVENT_NAME);
+	if (hQueueEvent)
+	{
+		SetEvent(hQueueEvent);
+		CloseHandle(hQueueEvent);
+	}
+}
+
+static DWORD WINAPI WorkerThreadWaitForQueueEvent( PCOMMONCONTEXT pcmnctx, HANDLE hQueueEvent )
+{
+	// This event is an advisory wakeup, not the source of queue correctness.
+	// It is auto-reset so one waiter rechecks the shared FIFO at a time; the
+	// timed wait handles missed wakeups and cases where the woken waiter is not
+	// the next runnable job. Avoid PulseEvent-style broadcast pulses because
+	// they are unreliable if waiters are briefly outside the wait state.
+	if (pcmnctx->hCancelEvent)
+	{
+		HANDLE rgHandles[2] = { hQueueEvent, pcmnctx->hCancelEvent };
+		return(WaitForMultipleObjects(2, rgHandles, FALSE, JOB_QUEUE_WAIT_INTERVAL_MS));
+	}
+
+	return(WaitForSingleObject(hQueueEvent, JOB_QUEUE_WAIT_INTERVAL_MS));
+}
+
+static BOOL WINAPI JobQueueGetProcessCreationTime( HANDLE hProcess, PULONGLONG pullCreationTime )
+{
+	FILETIME ftCreation, ftExit, ftKernel, ftUser;
+
+	if (!pullCreationTime)
+		return(FALSE);
+
+	*pullCreationTime = 0;
+
+	if (!GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser))
+		return(FALSE);
+
+	*pullCreationTime = ((ULONGLONG)ftCreation.dwHighDateTime << 32) | ftCreation.dwLowDateTime;
+	return(*pullCreationTime != 0);
+}
+
+static BOOL WINAPI JobQueueIsProcessAlive( PHASHCHECK_JOB_QUEUE_ENTRY pEntry )
+{
+	HANDLE hProcess;
+	DWORD dwWait;
+	ULONGLONG ullCreationTime;
+
+	if (!pEntry || !pEntry->dwProcessId || !pEntry->ullProcessCreationTime)
+		return(FALSE);
+
+	if (pEntry->dwProcessId == GetCurrentProcessId())
+	{
+		return(JobQueueGetProcessCreationTime(GetCurrentProcess(), &ullCreationTime) &&
+		       ullCreationTime == pEntry->ullProcessCreationTime);
+	}
+
+	hProcess = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pEntry->dwProcessId);
+	// Treat access-denied and transient OpenProcess failures as alive. In the
+	// Local namespace this is expected to be same-session/same-user; only an
+	// invalid PID is a reliable stale-entry signal here.
+	if (!hProcess)
+		return(GetLastError() != ERROR_INVALID_PARAMETER);
+
+	dwWait = WaitForSingleObject(hProcess, 0);
+	if (dwWait == WAIT_OBJECT_0)
+	{
+		CloseHandle(hProcess);
+		return(FALSE);
+	}
+
+	if (!JobQueueGetProcessCreationTime(hProcess, &ullCreationTime))
+	{
+		CloseHandle(hProcess);
+		return(TRUE);
+	}
+
+	CloseHandle(hProcess);
+	return(ullCreationTime == pEntry->ullProcessCreationTime);
+}
+
+static VOID WINAPI JobQueueRemoveAt( PHASHCHECK_JOB_QUEUE_STATE pState, DWORD iRemove )
+{
+	DWORD i, iTail;
+
+	assert(pState && iRemove < pState->cEntries);
+
+	for (i = iRemove; i + 1 < pState->cEntries; ++i)
+	{
+		DWORD iDst = (pState->iHead + i) % JOB_QUEUE_CAPACITY;
+		DWORD iSrc = (pState->iHead + i + 1) % JOB_QUEUE_CAPACITY;
+		pState->rgEntries[iDst] = pState->rgEntries[iSrc];
+	}
+
+	iTail = (pState->iHead + pState->cEntries - 1) % JOB_QUEUE_CAPACITY;
+	ZeroMemory(&pState->rgEntries[iTail], sizeof(pState->rgEntries[iTail]));
+
+	if (--pState->cEntries == 0)
+		pState->iHead = 0;
+}
+
+static BOOL WINAPI JobQueueRemoveStaleFrontEntries( PHASHCHECK_JOB_QUEUE_STATE pState )
+{
+	BOOL bChanged = FALSE;
+	PHASHCHECK_JOB_QUEUE_ENTRY pEntry;
+
+	while (pState->cEntries)
+	{
+		pEntry = &pState->rgEntries[pState->iHead];
+		if (JobQueueIsProcessAlive(pEntry))
+			break;
+
+		JobQueueRemoveAt(pState, 0);
+		bChanged = TRUE;
+	}
+
+	return(bChanged);
+}
+
+static BOOL WINAPI JobQueueEnqueue( PHASHCHECK_JOB_QUEUE_STATE pState, PHASHCHECK_JOB_SLOT pSlot )
+{
+	DWORD iTail;
+
+	if (pState->cEntries >= JOB_QUEUE_CAPACITY)
+		return(FALSE);
+
+	pSlot->ullJobId = pState->ullNextJobId++;
+	if (!pState->ullNextJobId)
+		pState->ullNextJobId = 1;
+
+	iTail = (pState->iHead + pState->cEntries) % JOB_QUEUE_CAPACITY;
+	pState->rgEntries[iTail].ullJobId = pSlot->ullJobId;
+	pState->rgEntries[iTail].dwProcessId = pSlot->dwProcessId;
+	pState->rgEntries[iTail].ullProcessCreationTime = pSlot->ullProcessCreationTime;
+	++pState->cEntries;
+	pSlot->bEnqueued = TRUE;
+
+	return(TRUE);
+}
+
+static BOOL WINAPI JobQueueIsFront( PHASHCHECK_JOB_QUEUE_STATE pState, PHASHCHECK_JOB_SLOT pSlot )
+{
+	PHASHCHECK_JOB_QUEUE_ENTRY pEntry;
+
+	if (!pState->cEntries || !pSlot->bEnqueued)
+		return(FALSE);
+
+	pEntry = &pState->rgEntries[pState->iHead];
+	return(pEntry->ullJobId == pSlot->ullJobId &&
+	       pEntry->dwProcessId == pSlot->dwProcessId &&
+	       pEntry->ullProcessCreationTime == pSlot->ullProcessCreationTime);
+}
+
+static BOOL WINAPI JobQueueRemoveSlot( PHASHCHECK_JOB_QUEUE_STATE pState, PHASHCHECK_JOB_SLOT pSlot )
+{
+	DWORD i;
+
+	for (i = 0; i < pState->cEntries; ++i)
+	{
+		DWORD iEntry = (pState->iHead + i) % JOB_QUEUE_CAPACITY;
+		PHASHCHECK_JOB_QUEUE_ENTRY pEntry = &pState->rgEntries[iEntry];
+
+		if (pEntry->ullJobId == pSlot->ullJobId &&
+		    pEntry->dwProcessId == pSlot->dwProcessId &&
+		    pEntry->ullProcessCreationTime == pSlot->ullProcessCreationTime)
+		{
+			JobQueueRemoveAt(pState, i);
+			pSlot->bEnqueued = FALSE;
+			return(TRUE);
+		}
+	}
+
+	return(FALSE);
+}
+
+static VOID WINAPI JobQueueCloseSlot( PHASHCHECK_JOB_SLOT pSlot )
+{
+	if (!pSlot)
 		return;
 
+	if (pSlot->pState)
+		UnmapViewOfFile(pSlot->pState);
+	if (pSlot->hMap)
+		CloseHandle(pSlot->hMap);
+	if (pSlot->hQueueEvent)
+		CloseHandle(pSlot->hQueueEvent);
+	if (pSlot->hQueueMutex)
+		CloseHandle(pSlot->hQueueMutex);
+
+	LocalFree(pSlot);
+}
+
+static PHASHCHECK_JOB_SLOT WINAPI JobQueueOpenSlot( )
+{
+	PHASHCHECK_JOB_SLOT pSlot = (PHASHCHECK_JOB_SLOT)LocalAlloc(LPTR, sizeof(HASHCHECK_JOB_SLOT));
+	if (!pSlot)
+		return(NULL);
+
+	pSlot->dwProcessId = GetCurrentProcessId();
+	if (!JobQueueGetProcessCreationTime(GetCurrentProcess(), &pSlot->ullProcessCreationTime))
+		goto err;
+
+	pSlot->hQueueMutex = CreateMutex(NULL, FALSE, HASHCHECK_JOB_QUEUE_MUTEX_NAME);
+	if (!pSlot->hQueueMutex)
+		goto err;
+
+	pSlot->hQueueEvent = CreateEvent(NULL, FALSE, FALSE, HASHCHECK_JOB_QUEUE_EVENT_NAME);
+	if (!pSlot->hQueueEvent)
+		goto err;
+
+	pSlot->hMap = CreateFileMapping(
+		INVALID_HANDLE_VALUE,
+		NULL,
+		PAGE_READWRITE,
+		0,
+		(DWORD)sizeof(HASHCHECK_JOB_QUEUE_STATE),
+		HASHCHECK_JOB_QUEUE_MAP_NAME
+	);
+	if (!pSlot->hMap)
+		goto err;
+
+	pSlot->pState = (PHASHCHECK_JOB_QUEUE_STATE)MapViewOfFile(
+		pSlot->hMap,
+		FILE_MAP_ALL_ACCESS,
+		0,
+		0,
+		sizeof(HASHCHECK_JOB_QUEUE_STATE)
+	);
+	if (!pSlot->pState)
+		goto err;
+
+	if (!JobQueueLock(pSlot->hQueueMutex))
+		goto err;
+
+	JobQueueValidateState(pSlot->pState);
+	ReleaseMutex(pSlot->hQueueMutex);
+
+	return(pSlot);
+
+err:
+	JobQueueCloseSlot(pSlot);
+	return(NULL);
+}
+
+// Return values:
+//   NULL                 - canceled before acquiring a runnable slot
+//   INVALID_HANDLE_VALUE - queue bypassed or unavailable; run without queue gating
+//   other handle          - queued slot owned by caller; release when hashing ends
+HANDLE WINAPI WorkerThreadAcquireJobSlot( PCOMMONCONTEXT pcmnctx )
+{
+	PHASHCHECK_JOB_SLOT pSlot;
+	BOOL bQueued = FALSE;
+	DWORD cQueueFullRetries = 0;
+
+	if (pcmnctx->dwFlags & HCF_BYPASS_QUEUE)
+		return(INVALID_HANDLE_VALUE);
+
+	pSlot = JobQueueOpenSlot();
+
+	// Hashing should remain available even if the optional cross-process queue
+	// cannot be created. Return a sentinel that means "run without gating".
+	if (!pSlot)
+		return(INVALID_HANDLE_VALUE);
+
+	for (;;)
+	{
+		BOOL bAtFront = FALSE;
+		BOOL bQueueChanged = FALSE;
+		BOOL bQueueFull = FALSE;
+
+		if (WorkerThreadIsCancelRequested(pcmnctx))
+		{
+			WorkerThreadReleaseJobSlot((HANDLE)pSlot);
+			return(NULL);
+		}
+
+		if (!JobQueueLock(pSlot->hQueueMutex))
+		{
+			if (!pSlot->bEnqueued)
+			{
+				if (bQueued &&
+				    WorkerThreadSetStatusUnlessCanceled(pcmnctx, ACTIVE) &&
+				    pcmnctx->hWnd)
+				{
+					PostMessage(pcmnctx->hWnd, HM_WORKERTHREAD_QUEUESTATE, (WPARAM)pcmnctx, FALSE);
+				}
+
+				if (WorkerThreadIsCancelRequested(pcmnctx))
+				{
+					JobQueueCloseSlot(pSlot);
+					return(NULL);
+				}
+
+				JobQueueCloseSlot(pSlot);
+				return(INVALID_HANDLE_VALUE);
+			}
+
+			WorkerThreadWaitForQueueEvent(pcmnctx, pSlot->hQueueEvent);
+			continue;
+		}
+
+		JobQueueValidateState(pSlot->pState);
+		bQueueChanged = JobQueueRemoveStaleFrontEntries(pSlot->pState);
+
+		if (!pSlot->bEnqueued)
+		{
+			if (JobQueueEnqueue(pSlot->pState, pSlot))
+			{
+				bQueueChanged = TRUE;
+				cQueueFullRetries = 0;
+			}
+			else
+			{
+				bQueueFull = TRUE;
+			}
+		}
+
+		bAtFront = JobQueueIsFront(pSlot->pState, pSlot);
+		ReleaseMutex(pSlot->hQueueMutex);
+
+		if (bQueueChanged)
+			SetEvent(pSlot->hQueueEvent);
+
+		if (bQueueFull)
+		{
+			if (WorkerThreadIsCancelRequested(pcmnctx))
+			{
+				WorkerThreadReleaseJobSlot((HANDLE)pSlot);
+				return(NULL);
+			}
+
+			if (++cQueueFullRetries >= JOB_QUEUE_FULL_RETRY_LIMIT)
+			{
+				JobQueueCloseSlot(pSlot);
+				return(INVALID_HANDLE_VALUE);
+			}
+
+			WorkerThreadWaitForQueueEvent(pcmnctx, pSlot->hQueueEvent);
+			continue;
+		}
+
+		if (bAtFront)
+		{
+			if (!WorkerThreadSetStatusUnlessCanceled(pcmnctx, ACTIVE))
+			{
+				WorkerThreadReleaseJobSlot((HANDLE)pSlot);
+				return(NULL);
+			}
+
+			if (bQueued)
+			{
+				if (pcmnctx->hWnd)
+					PostMessage(pcmnctx->hWnd, HM_WORKERTHREAD_QUEUESTATE, (WPARAM)pcmnctx, FALSE);
+			}
+			return((HANDLE)pSlot);
+		}
+
+		if (!bQueued)
+		{
+			if (!WorkerThreadSetStatusUnlessCanceled(pcmnctx, QUEUED))
+			{
+				WorkerThreadReleaseJobSlot((HANDLE)pSlot);
+				return(NULL);
+			}
+
+			if (pcmnctx->hWnd)
+				PostMessage(pcmnctx->hWnd, HM_WORKERTHREAD_QUEUESTATE, (WPARAM)pcmnctx, TRUE);
+			bQueued = TRUE;
+		}
+
+		WorkerThreadWaitForQueueEvent(pcmnctx, pSlot->hQueueEvent);
+	}
+}
+
+VOID WINAPI WorkerThreadReleaseJobSlot( HANDLE hJobSlot )
+{
+	if (hJobSlot && hJobSlot != INVALID_HANDLE_VALUE)
+	{
+		PHASHCHECK_JOB_SLOT pSlot = (PHASHCHECK_JOB_SLOT)hJobSlot;
+		BOOL bQueueChanged = FALSE;
+
+		if (pSlot->pState && pSlot->hQueueMutex && JobQueueLock(pSlot->hQueueMutex))
+		{
+			JobQueueValidateState(pSlot->pState);
+			if (pSlot->bEnqueued)
+				bQueueChanged = JobQueueRemoveSlot(pSlot->pState, pSlot);
+			ReleaseMutex(pSlot->hQueueMutex);
+		}
+
+		if (bQueueChanged && pSlot->hQueueEvent)
+			SetEvent(pSlot->hQueueEvent);
+
+		JobQueueCloseSlot(pSlot);
+	}
+}
+
+VOID WINAPI WorkerThreadStop( PCOMMONCONTEXT pcmnctx )
+{
+	LONG lPrevStatus;
+
+	for (;;)
+	{
+		lPrevStatus = WorkerThreadGetStatus(pcmnctx);
+		if (lPrevStatus == INACTIVE ||
+		    lPrevStatus == CLEANUP_COMPLETED ||
+		    lPrevStatus == CANCEL_REQUESTED)
+		{
+			return;
+		}
+
+		if (WorkerThreadSetStatusIf(pcmnctx, CANCEL_REQUESTED, lPrevStatus))
+			break;
+	}
+
 	// If the thread is paused, unpause it
-    if (pcmnctx->status == PAUSED)
-    {
-        // Signal cancellation first, so that unpaused threads immediately exit
-        pcmnctx->status = CANCEL_REQUESTED;
+    if (lPrevStatus == PAUSED && pcmnctx->hUnpauseEvent)
         SetEvent(pcmnctx->hUnpauseEvent);
-    }
-    else
-    {
-        // Signal cancellation
-        pcmnctx->status = CANCEL_REQUESTED;
-    }
+
+    if (pcmnctx->hCancelEvent)
+        SetEvent(pcmnctx->hCancelEvent);
+    JobQueueSignalWaiters();
 
 	// Disable the control buttons
 	if (! (pcmnctx->dwFlags & (HCF_EXIT_PENDING | HCF_RESTARTING)))
@@ -365,7 +912,7 @@ VOID WINAPI WorkerThreadStop( PCOMMONCONTEXT pcmnctx )
 
 VOID WINAPI WorkerThreadCleanup( PCOMMONCONTEXT pcmnctx )
 {
-	if (pcmnctx->status == CLEANUP_COMPLETED)
+	if (WorkerThreadGetStatus(pcmnctx) == CLEANUP_COMPLETED)
 		return;
 
 	// There are only two times this function gets called:
@@ -377,7 +924,7 @@ VOID WINAPI WorkerThreadCleanup( PCOMMONCONTEXT pcmnctx )
 
 	if (pcmnctx->hThread != NULL)
 	{
-		if (pcmnctx->status != INACTIVE)
+		if (WorkerThreadGetStatus(pcmnctx) != INACTIVE)
 		{
 			// Forced abort, where the thread has been told to stop but has not yet
 			// stopped. The common context and UI resources are owned by the caller,
@@ -397,8 +944,13 @@ VOID WINAPI WorkerThreadCleanup( PCOMMONCONTEXT pcmnctx )
         CloseHandle(pcmnctx->hUnpauseEvent);
         pcmnctx->hUnpauseEvent = NULL;
     }
+    if (!(pcmnctx->dwFlags & HCF_RESTARTING) && pcmnctx->hCancelEvent != NULL)
+    {
+        CloseHandle(pcmnctx->hCancelEvent);
+        pcmnctx->hCancelEvent = NULL;
+    }
 
-	pcmnctx->status = CLEANUP_COMPLETED;
+	WorkerThreadSetStatus(pcmnctx, CLEANUP_COMPLETED);
 
 	if (! (pcmnctx->dwFlags & (HCF_EXIT_PENDING | HCF_RESTARTING)))
 	{
@@ -421,7 +973,7 @@ DWORD WINAPI WorkerThreadStartup( PCOMMONCONTEXT pcmnctx )
 {
     pcmnctx->pfnWorkerMain(pcmnctx);
 
-	pcmnctx->status = INACTIVE;
+	WorkerThreadSetStatus(pcmnctx, INACTIVE);
 
 	if (! (pcmnctx->dwFlags & (HCF_EXIT_PENDING | HCF_RESTARTING)))
 		PostMessage(pcmnctx->hWnd, HM_WORKERTHREAD_DONE, (WPARAM)pcmnctx, 0);
@@ -516,9 +1068,9 @@ VOID WINAPI WorkerThreadHashFile( PCOMMONCONTEXT pcmnctx, PCTSTR pszPath,
 	while (pcmnctx->cSentMsgs > pcmnctx->cHandledMsgs + MSG_THROTTLE_THRESHOLD)
 	{
 		Sleep(50);
-        if (pcmnctx->status == PAUSED)
+        if (WorkerThreadGetStatus(pcmnctx) == PAUSED)
             WaitForSingleObject(pcmnctx->hUnpauseEvent, INFINITE);
-		if (pcmnctx->status == CANCEL_REQUESTED)
+		if (WorkerThreadGetStatus(pcmnctx) == CANCEL_REQUESTED)
 			return;
 	}
 
@@ -575,9 +1127,9 @@ VOID WINAPI WorkerThreadHashFile( PCOMMONCONTEXT pcmnctx, PCTSTR pszPath,
 #if defined(HASHCHECK_BLAKE3_TBB_ENABLED)
 			if (ShouldUseBLAKE3Tbb(pwhctx, cbFileSize, dwReadBufferSize, pcmnctx->bOuterMultithreaded))
 			{
-                if (pcmnctx->status == PAUSED)
+                if (WorkerThreadGetStatus(pcmnctx) == PAUSED)
                     WaitForSingleObject(pcmnctx->hUnpauseEvent, INFINITE);
-				if (pcmnctx->status == CANCEL_REQUESTED)
+				if (WorkerThreadGetStatus(pcmnctx) == CANCEL_REQUESTED)
 				{
 					CloseHandle(hFile);
 					return;
@@ -601,9 +1153,9 @@ VOID WINAPI WorkerThreadHashFile( PCOMMONCONTEXT pcmnctx, PCTSTR pszPath,
 				{
 					do // Inner loop: break every 4 cycles or if the end is reached
 					{
-                        if (pcmnctx->status == PAUSED)
+                        if (WorkerThreadGetStatus(pcmnctx) == PAUSED)
                             WaitForSingleObject(pcmnctx->hUnpauseEvent, INFINITE);
-						if (pcmnctx->status == CANCEL_REQUESTED)
+						if (WorkerThreadGetStatus(pcmnctx) == CANCEL_REQUESTED)
 						{
 							CloseHandle(hFile);
 							return;
