@@ -2,6 +2,7 @@
 
 !include MUI2.nsh
 !include x64.nsh
+!include WinVer.nsh
 !include LogicLib.nsh
 !include FileFunc.nsh
 
@@ -288,49 +289,52 @@ Section
         File /oname=tbb12-LICENSE.txt ..\libs\oneTBB\LICENSE.txt
         !insertmacro AbortIfErrors "Extracting TBB runtime license"
 
-        ; The MSIX sparse package declares HashCheckPackageHost.exe as its
-        ; Application/Executable. That file must exist in the package's
-        ; external install location for Windows 11 to consider the Application
-        ; identity complete, and the IExplorerCommand handler launches it to
-        ; run long-lived HashCheck UI outside the COM surrogate.
+        ; Install the standalone launcher used for command-line checksum creation.
+        ; On Windows 11, the sparse package also declares this executable as its
+        ; Application/Executable, and the IExplorerCommand handler launches it so
+        ; long-lived HashCheck UI runs outside the COM surrogate.
         !insertmacro SetStep "Extracting packaged app host"
         ClearErrors
         File ..\Bin\x64\Release\HashCheckPackageHost.exe
         !insertmacro AbortIfErrors "Extracting packaged app host"
 
-        ; Windows 11 uses the sparse package app identity, not
-        ; IExplorerCommand::GetIcon, for the grouped flyout icon. The app
-        ; visual resources must therefore exist in the package's external
-        ; location beside HashCheckPackageHost.exe.
-        !insertmacro SetStep "Extracting Windows 11 package visual assets"
-        ClearErrors
-        File /r HashCheckWin11Package\Assets
-        !insertmacro AbortIfErrors "Extracting Windows 11 package visual assets"
-
-        !insertmacro SetStep "Extracting Windows 11 package resource index"
-        ClearErrors
-        File /nonfatal HashCheckWin11Package\resources*.pri
-        ${If} ${Errors}
-            !insertmacro LogLine "WARNING: Windows 11 package resource index was not embedded; Win11 grouped menu icon may be missing"
+        ${If} ${AtLeastWin11}
+            ; Windows 11 uses the sparse package app identity, not
+            ; IExplorerCommand::GetIcon, for the grouped flyout icon. The app
+            ; visual resources must therefore exist in the package's external
+            ; location beside HashCheckPackageHost.exe.
+            !insertmacro SetStep "Extracting Windows 11 package visual assets"
             ClearErrors
-        ${EndIf}
+            File /r HashCheckWin11Package\Assets
+            !insertmacro AbortIfErrors "Extracting Windows 11 package visual assets"
 
-        !insertmacro SetStep "Extracting Windows 11 sparse package"
-        ClearErrors
-        File /nonfatal /oname=HashCheckWin11.msix ..\Bin\HashCheckWin11.msix
-        ${If} ${Errors}
-            !insertmacro LogLine "Windows 11 sparse package was not embedded in this installer"
-        ${EndIf}
-        ClearErrors
+            !insertmacro SetStep "Extracting Windows 11 package resource index"
+            ClearErrors
+            File /nonfatal HashCheckWin11Package\resources*.pri
+            ${If} ${Errors}
+                !insertmacro LogLine "WARNING: Windows 11 package resource index was not embedded; Win11 grouped menu icon may be missing"
+                ClearErrors
+            ${EndIf}
 
-        ; Register the sparse identity package used by the Windows 11 context menu.
-        ; Downlevel Windows builds keep the legacy shell extension path.
-        IfFileExists "$PROGRAMFILES64\HashCheck\HashCheckWin11.msix" do_register_sparse_package skip_sparse_package
-        do_register_sparse_package:
-        Call register_sparse_package
-        !insertmacro AbortIfErrors "Preparing Windows 11 sparse package registration"
-        !insertmacro AbortIfExitCode "Registering Windows 11 sparse package"
-        skip_sparse_package:
+            !insertmacro SetStep "Extracting Windows 11 sparse package"
+            ClearErrors
+            File /nonfatal /oname=HashCheckWin11.msix ..\Bin\HashCheckWin11.msix
+            ${If} ${Errors}
+                !insertmacro LogLine "Windows 11 sparse package was not embedded in this installer"
+            ${EndIf}
+            ClearErrors
+
+            ; Register the sparse identity package used by the Windows 11 context menu.
+            IfFileExists "$PROGRAMFILES64\HashCheck\HashCheckWin11.msix" do_register_sparse_package skip_sparse_package
+            do_register_sparse_package:
+            Call register_sparse_package
+            !insertmacro AbortIfErrors "Preparing Windows 11 sparse package registration"
+            !insertmacro AbortIfExitCode "Registering Windows 11 sparse package"
+            skip_sparse_package:
+        ${Else}
+            ; Downlevel Windows builds keep the legacy shell extension path.
+            !insertmacro LogLine "Skipping Windows 11 sparse package on pre-Windows 11 OS"
+        ${EndIf}
 
         ; Clean up the old System32 install location used by earlier releases.
         !insertmacro SetStep "Cleaning up old 64-bit install location"
